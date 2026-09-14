@@ -111,6 +111,11 @@ impl Editor {
                 return Err(e);
             }
         };
+        // Smart objects the command touched rebuild before anyone renders.
+        let mut warnings = Vec::new();
+        if crate::smart::any_stale(&self.doc.layers) {
+            warnings = crate::smart::refresh(&mut self.doc.layers, &self.domains);
+        }
         if applied.undoable {
             self.history.record(&before, &applied.label, applied.merge_key.as_deref());
             if op.starts_with("doc.") {
@@ -127,6 +132,7 @@ impl Editor {
             "label": applied.label,
             "dirty": applied.dirty,
             "data": applied.data,
+            "warnings": warnings,
             "revision": self.revision,
         }))
     }

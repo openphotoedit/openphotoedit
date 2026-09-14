@@ -9,3 +9,4 @@ test-results/
 playwright-report/
 *.part
 .DS_Store
+dist-app/

@@ -259,6 +259,7 @@ fn resize(doc: &mut Document, width: u32, height: u32, method: Resample) {
                 to.x *= sx;
                 to.y *= sy;
             }
+            LayerKind::Smart { .. } => crate::smart::map_quad(&mut l.kind, |p| Point::new(p.x * sx, p.y * sy)),
             _ => {}
         }
         if let Some(m) = &mut l.mask {
@@ -314,6 +315,10 @@ fn rotate(doc: &mut Document, t: i32) {
                 map_pt(from);
                 map_pt(to);
             }
+            LayerKind::Smart { .. } => crate::smart::map_quad(&mut l.kind, |mut p| {
+                map_pt(&mut p);
+                p
+            }),
             _ => {}
         }
         if let Some(m) = &mut l.mask {
@@ -361,6 +366,10 @@ fn flip_doc(doc: &mut Document, horizontal: bool) {
                 fp(from);
                 fp(to);
             }
+            LayerKind::Smart { .. } => crate::smart::map_quad(&mut l.kind, |mut p| {
+                fp(&mut p);
+                p
+            }),
             _ => {}
         }
         if let Some(m) = &mut l.mask {
@@ -402,6 +411,7 @@ fn rotate_arbitrary(doc: &mut Document, degrees: f64, expand: bool) {
                 *from = m.apply(*from);
                 *to = m.apply(*to);
             }
+            LayerKind::Smart { .. } => crate::smart::map_quad(&mut l.kind, |p| m.apply(p)),
             _ => {}
         }
         if let Some(mask) = &mut l.mask {

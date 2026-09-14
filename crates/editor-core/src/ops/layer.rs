@@ -8,8 +8,8 @@ use crate::adjust::Adjustment;
 use crate::blend::BlendMode;
 use crate::color::Rgba8;
 use crate::document::Document;
-use crate::geom::Rect;
-use crate::layer::{Fill, Layer, LayerId, LayerKind, LayerMask, Locks, Raster, ShapeData, TextData};
+use crate::geom::{Point, Rect};
+use crate::layer::{Fill, Layer, LayerId, LayerKind, LayerMask, Locks, Raster, ShapeData, SmartFilter, SmartSource, TextData};
 use crate::plane::Plane;
 use crate::render::{render_layers, to_u8, View};
 use crate::selection;
@@ -137,6 +137,29 @@ pub enum Cmd {
     /// Replace a mask region with single-channel `bytes`.
     #[serde(rename = "layer.set-mask-pixels")]
     SetMaskPixels { id: LayerId, x: i32, y: i32, width: u32, height: u32 },
+
+    /// Place pixels as a smart object (scales without losing resolution).
+    #[serde(rename = "layer.place-smart")]
+    PlaceSmart { width: u32, height: u32, #[serde(default)] x: i32, #[serde(default)] y: i32, #[serde(default)] name: Option<String>, #[serde(default)] above: Option<LayerId> },
+    #[serde(rename = "layer.convert-to-smart")]
+    ConvertToSmart { ids: Vec<LayerId>, #[serde(default)] name: Option<String> },
+    /// Where the object's corners land (TL, TR, BR, BL).
+    #[serde(rename = "layer.smart-transform")]
+    SmartTransform { id: LayerId, quad: [Point; 4] },
+    #[serde(rename = "layer.smart-filter-add")]
+    SmartFilterAdd { id: LayerId, filter: serde_json::Value, #[serde(default = "one")] opacity: f32, #[serde(default)] blend: BlendMode },
+    #[serde(rename = "layer.smart-filter-set")]
+    SmartFilterSet { id: LayerId, index: usize, #[serde(default)] filter: Option<serde_json::Value>, #[serde(default)] enabled: Option<bool>, #[serde(default)] opacity: Option<f32>, #[serde(default)] blend: Option<BlendMode> },
+    #[serde(rename = "layer.smart-filter-remove")]
+    SmartFilterRemove { id: LayerId, index: usize },
+    #[serde(rename = "layer.smart-filter-move")]
+    SmartFilterMove { id: LayerId, from: usize, to: usize },
+    /// Replace the contents with new RGBA pixels, keeping the transform and filters.
+    #[serde(rename = "layer.smart-replace")]
+    SmartReplace { id: LayerId, width: u32, height: u32 },
+    /// Turn a smart object back into its layers (or a plain pixel layer).
+    #[serde(rename = "layer.smart-unpack")]
+    SmartUnpack { id: LayerId },
 
     /// Layer via copy / via cut from the selection.
     #[serde(rename = "layer.from-selection")]
@@ -624,7 +647,7 @@ pub fn run(cmd: Cmd, doc: &mut Document, bytes: &[u8]) -> Result<Applied> {
         Cmd::Rasterize { id } => {
             let l = layer(doc, id)?.clone();
             let raster = match &l.kind {
-                LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } => raster.clone(),
+                LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } | LayerKind::Smart { raster, .. } => raster.clone(),
                 LayerKind::Fill(_) | LayerKind::Group { .. } => {
                     let mut solo = l.clone();
                     solo.mask = None;
@@ -743,6 +766,186 @@ pub fn run(cmd: Cmd, doc: &mut Document, bytes: &[u8]) -> Result<Applied> {
             m.raster.plane.compact();
             Ok(Applied::step("Edit Layer Mask").dirty(rect))
         }
+        Cmd::PlaceSmart { width, height, x, y, name, above } => {
+            check_rgba(bytes, width, height)?;
+            let id = doc.alloc_id();
+            let plane = Plane::from_raw(width, height, 4, bytes, [0; 4]);
+            let quad = crate::smart::rect_quad(Rect::new(x, y, width as i32, height as i32));
+            let raster = Raster::new(plane.clone(), x, y);
+            let l = Layer::new(
+                id,
+                name.unwrap_or_else(|| default_name(doc, "Smart Object")),
+                LayerKind::Smart { source: SmartSource::Pixels(plane), quad, filters: Vec::new(), raster, stale: false },
+            );
+            add_layer(doc, l, above);
+            Ok(Applied::step("Place Embedded").with_data(serde_json::json!({ "id": id })))
+        }
+        Cmd::ConvertToSmart { ids, name } => {
+            if ids.is_empty() {
+                return Err(EditorError::Invalid("nothing to convert".into()));
+            }
+            let slots: Vec<_> = ids.iter().map(|&id| doc.slot_of(id).ok_or(EditorError::NoLayer(id))).collect::<Result<_>>()?;
+            let parent = slots[0].parent;
+            if slots.iter().any(|s| s.parent != parent) {
+                return Err(EditorError::Invalid("layers to convert must share a parent".into()));
+            }
+            let mut ordered: Vec<(usize, LayerId)> = slots.iter().map(|s| s.index).zip(ids.iter().copied()).collect();
+            ordered.sort();
+            let top_index = ordered.last().unwrap().0;
+            let mut members = Vec::new();
+            for &(_, id) in &ordered {
+                members.push(doc.remove(id).unwrap());
+            }
+            let insert_at = top_index + 1 - members.len();
+            let (w, h) = (doc.width, doc.height);
+            let single_plain = members.len() == 1
+                && matches!(members[0].kind, LayerKind::Pixel(_))
+                && members[0].mask.is_none()
+                && members[0].effects.is_none();
+            let sid = doc.alloc_id();
+            let mut so = if single_plain {
+                let m = &members[0];
+                let r = m.raster().unwrap();
+                let b = r.plane.content_bounds();
+                let b = if b.is_empty() { Rect::new(0, 0, 1, 1) } else { b };
+                let plane = r.plane.extract(b);
+                let rect = b.translate(r.x, r.y);
+                let mut l = Layer::new(
+                    sid,
+                    name.clone().unwrap_or_else(|| m.name.clone()),
+                    LayerKind::Smart { source: SmartSource::Pixels(plane), quad: crate::smart::rect_quad(rect), filters: Vec::new(), raster: Raster::empty(1, 1), stale: true },
+                );
+                l.opacity = m.opacity;
+                l.blend = m.blend;
+                l.visible = m.visible;
+                l
+            } else {
+                let mut nested = Document::new(w, h);
+                nested.resolution = doc.resolution;
+                nested.layers = members;
+                nested.reserve_ids();
+                nested.active = nested.layers.last().map(|l| l.id);
+                Layer::new(
+                    sid,
+                    name.unwrap_or_else(|| default_name(doc, "Smart Object")),
+                    LayerKind::Smart { source: SmartSource::Document(Box::new(nested)), quad: crate::smart::rect_quad(Rect::new(0, 0, w as i32, h as i32)), filters: Vec::new(), raster: Raster::empty(1, 1), stale: true },
+                )
+            };
+            so.touch();
+            doc.insert(parent, insert_at, so);
+            doc.active = Some(sid);
+            Ok(Applied::step("Convert to Smart Object").with_data(serde_json::json!({ "id": sid })))
+        }
+        Cmd::SmartTransform { id, quad: q } => {
+            let l = smart_layer(doc, id)?;
+            if l.locks.all || l.locks.position {
+                return Err(EditorError::Locked(l.name.clone()));
+            }
+            if let LayerKind::Smart { quad, stale, .. } = &mut l.kind {
+                *quad = q;
+                *stale = true;
+            }
+            Ok(Applied::step("Free Transform").merge(format!("smart-transform:{id}")))
+        }
+        Cmd::SmartFilterAdd { id, filter, opacity, blend } => {
+            if filter.get("op").and_then(|v| v.as_str()).is_none_or(|op| !op.starts_with("filter.")) {
+                return Err(EditorError::Invalid("a smart filter must be a filter.* command".into()));
+            }
+            let l = smart_layer(doc, id)?;
+            let label = filter["op"].as_str().unwrap_or("").trim_start_matches("filter.").replace('-', " ");
+            if let LayerKind::Smart { filters, stale, .. } = &mut l.kind {
+                filters.push(SmartFilter { filter, enabled: true, opacity, blend });
+                *stale = true;
+            }
+            Ok(Applied::step(format!("Smart Filter: {label}")))
+        }
+        Cmd::SmartFilterSet { id, index, filter, enabled, opacity, blend } => {
+            let l = smart_layer(doc, id)?;
+            let LayerKind::Smart { filters, stale, .. } = &mut l.kind else { unreachable!() };
+            let f = filters.get_mut(index).ok_or_else(|| EditorError::Invalid(format!("no smart filter {index}")))?;
+            if let Some(v) = filter {
+                f.filter = v;
+            }
+            if let Some(v) = enabled {
+                f.enabled = v;
+            }
+            if let Some(v) = opacity {
+                f.opacity = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = blend {
+                f.blend = v;
+            }
+            *stale = true;
+            Ok(Applied::step("Edit Smart Filter").merge(format!("smart-filter:{id}:{index}")))
+        }
+        Cmd::SmartFilterRemove { id, index } => {
+            let l = smart_layer(doc, id)?;
+            let LayerKind::Smart { filters, stale, .. } = &mut l.kind else { unreachable!() };
+            if index >= filters.len() {
+                return Err(EditorError::Invalid(format!("no smart filter {index}")));
+            }
+            filters.remove(index);
+            *stale = true;
+            Ok(Applied::step("Delete Smart Filter"))
+        }
+        Cmd::SmartFilterMove { id, from, to } => {
+            let l = smart_layer(doc, id)?;
+            let LayerKind::Smart { filters, stale, .. } = &mut l.kind else { unreachable!() };
+            if from >= filters.len() || to >= filters.len() {
+                return Err(EditorError::Invalid("smart filter index out of range".into()));
+            }
+            let f = filters.remove(from);
+            filters.insert(to, f);
+            *stale = true;
+            Ok(Applied::step("Move Smart Filter"))
+        }
+        Cmd::SmartReplace { id, width, height } => {
+            check_rgba(bytes, width, height)?;
+            let l = smart_layer(doc, id)?;
+            let LayerKind::Smart { source, stale, .. } = &mut l.kind else { unreachable!() };
+            *source = SmartSource::Pixels(Plane::from_raw(width, height, 4, bytes, [0; 4]));
+            *stale = true;
+            Ok(Applied::step("Replace Contents"))
+        }
+        Cmd::SmartUnpack { id } => {
+            let slot = doc.slot_of(id).ok_or(EditorError::NoLayer(id))?;
+            let l = layer(doc, id)?.clone();
+            let LayerKind::Smart { source, quad, filters, raster, .. } = l.kind else {
+                return Err(EditorError::Invalid(format!("`{}` is not a smart object", l.name)));
+            };
+            let untouched = filters.iter().all(|f| !f.enabled) && {
+                let (w, h) = source.size();
+                let q0 = crate::smart::rect_quad(Rect::new(quad[0].x.round() as i32, quad[0].y.round() as i32, w as i32, h as i32));
+                quad.iter().zip(q0.iter()).all(|(a, b)| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6)
+            };
+            doc.remove(id);
+            match source {
+                SmartSource::Document(nested) if untouched && quad[0].x == 0.0 && quad[0].y == 0.0 => {
+                    let mut nested = *nested;
+                    let mut restored = Vec::new();
+                    for mut child in nested.layers.drain(..) {
+                        reassign_ids(doc, &mut child);
+                        restored.push(child);
+                    }
+                    let first = restored.last().map(|c| c.id);
+                    for (k, c) in restored.into_iter().enumerate() {
+                        doc.insert(slot.parent, slot.index + k, c);
+                    }
+                    doc.active = first;
+                }
+                _ => {
+                    // Transformed or filtered: keep what it looks like.
+                    let mut p = Layer::new(l.id, l.name.clone(), LayerKind::Pixel(raster));
+                    p.opacity = l.opacity;
+                    p.blend = l.blend;
+                    p.mask = l.mask.clone();
+                    p.effects = l.effects.clone();
+                    doc.insert(slot.parent, slot.index, p);
+                    doc.active = Some(l.id);
+                }
+            }
+            Ok(Applied::step("Convert to Layers"))
+        }
         Cmd::FromSelection { id, cut } => {
             let id = target_id(doc, id)?;
             let src = layer(doc, id)?.clone();
@@ -808,6 +1011,14 @@ pub fn run(cmd: Cmd, doc: &mut Document, bytes: &[u8]) -> Result<Applied> {
     }
 }
 
+fn smart_layer(doc: &mut Document, id: LayerId) -> Result<&mut Layer> {
+    let l = layer_mut(doc, id)?;
+    if !matches!(l.kind, LayerKind::Smart { .. }) {
+        return Err(EditorError::Invalid(format!("`{}` is not a smart object", l.name)));
+    }
+    Ok(l)
+}
+
 fn touch_parents(doc: &mut Document, id: LayerId) {
     // find_mut bumps every ancestor on the way down.
     let _ = doc.find_mut(id);
@@ -844,6 +1055,14 @@ pub fn offset_layer(l: &mut Layer, dx: i32, dy: i32) -> bool {
             raster.x += dx;
             raster.y += dy;
             for p in &mut data.points {
+                p.x += dx as f64;
+                p.y += dy as f64;
+            }
+        }
+        LayerKind::Smart { raster, quad, .. } => {
+            raster.x += dx;
+            raster.y += dy;
+            for p in quad.iter_mut() {
                 p.x += dx as f64;
                 p.y += dy as f64;
             }

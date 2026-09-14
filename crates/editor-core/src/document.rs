@@ -14,6 +14,21 @@ pub struct DocMeta {
     pub source_name: Option<String>,
     /// Ordered actions for Content Credentials: `(action, detail)`.
     pub actions: Vec<(String, String)>,
+    /// Opaque data a file-format crate keeps with the document, keyed by
+    /// format (`"psd"`: blocks this engine does not model, re-emitted on
+    /// export). Cheap to clone; the project format saves it verbatim.
+    #[serde(skip)]
+    pub extra: std::collections::BTreeMap<String, Sidecar>,
+}
+
+/// Shared, immutable bytes: history snapshots clone the `Arc`, not the data.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Sidecar(pub std::sync::Arc<Vec<u8>>);
+
+impl std::fmt::Debug for Sidecar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sidecar({} bytes)", self.0.len())
+    }
 }
 
 #[derive(Clone, Debug)]

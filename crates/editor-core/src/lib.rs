@@ -21,6 +21,7 @@ pub mod plane;
 pub mod render;
 pub mod selection;
 pub mod shape;
+pub mod smart;
 pub mod summary;
 pub mod transform;
 

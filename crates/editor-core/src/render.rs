@@ -253,13 +253,13 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
     }
     let mask = layer.mask.as_ref().filter(|m| m.enabled).map(|m| sample_mask(m, ctx));
     match &layer.kind {
-        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. }
+        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } | LayerKind::Smart { raster: r, .. }
             if fresh && mask.is_none() && layer.blend == BlendMode::Normal && layer.opacity * layer.fill_opacity >= 1.0 =>
         {
             // First layer onto a transparent buffer: the result is the layer.
             r.plane.resample(ctx.x0 - r.x as f64, ctx.y0 - r.y as f64, ctx.step, ctx.width, ctx.height, buf);
         }
-        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } => {
+        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } | LayerKind::Smart { raster: r, .. } => {
             let mut src = vec![0f32; n * 4];
             r.plane.resample(ctx.x0 - r.x as f64, ctx.y0 - r.y as f64, ctx.step, ctx.width, ctx.height, &mut src);
             blend_buffer(buf, &src, mask.as_deref(), layer.opacity * layer.fill_opacity, layer.blend, ctx);
@@ -323,14 +323,14 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
 fn composite_styled(layer: &Layer, fx: &crate::effects::LayerEffects, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document) -> bool {
     use crate::effects::{composite_with_effects, EffectCtx};
     let apron = match &layer.kind {
-        LayerKind::Pixel(_) | LayerKind::Text { .. } | LayerKind::Shape { .. } => ((fx.reach() as f64 / ctx.step).ceil() as usize + 2).min(2048),
+        LayerKind::Pixel(_) | LayerKind::Text { .. } | LayerKind::Shape { .. } | LayerKind::Smart { .. } => ((fx.reach() as f64 / ctx.step).ceil() as usize + 2).min(2048),
         LayerKind::Group { .. } | LayerKind::Fill(_) => ((fx.reach() as f64 / ctx.step).ceil() as usize + 2).min(2048),
         LayerKind::Adjustment(_) => return false,
     };
     let (w, h) = (ctx.width + 2 * apron, ctx.height + 2 * apron);
     let ext = ApplyCtx { x0: ctx.x0 - apron as f64 * ctx.step, y0: ctx.y0 - apron as f64 * ctx.step, width: w, height: h, ..*ctx };
     let content: Vec<f32> = match &layer.kind {
-        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } => {
+        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } | LayerKind::Smart { raster: r, .. } => {
             let mut c = vec![0f32; w * h * 4];
             r.plane.resample(ext.x0 - r.x as f64, ext.y0 - r.y as f64, ext.step, w, h, &mut c);
             c

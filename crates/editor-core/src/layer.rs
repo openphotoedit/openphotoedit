@@ -222,6 +222,46 @@ impl Default for ShapeData {
     }
 }
 
+/// A filter kept live on a smart object: an engine command (`filter.*`)
+/// re-run on the object's contents whenever they change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SmartFilter {
+    /// The command, e.g. `{"op": "filter.gaussian-blur", "radius": 4}`.
+    pub filter: serde_json::Value,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "full")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub blend: BlendMode,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn full() -> f32 {
+    1.0
+}
+
+/// What a smart object contains.
+#[derive(Clone, Debug)]
+pub enum SmartSource {
+    /// Placed pixels, kept at their original resolution.
+    Pixels(Plane),
+    /// Layers converted to a smart object: a whole nested document.
+    Document(Box<crate::document::Document>),
+}
+
+impl SmartSource {
+    pub fn size(&self) -> (u32, u32) {
+        match self {
+            SmartSource::Pixels(p) => (p.width(), p.height()),
+            SmartSource::Document(d) => (d.width, d.height),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LayerKind {
     Pixel(Raster),
@@ -230,6 +270,10 @@ pub enum LayerKind {
     Group { children: Vec<Layer>, pass_through: bool, expanded: bool },
     Text { data: TextData, raster: Raster },
     Shape { data: ShapeData, raster: Raster },
+    /// Non-destructive container: `source` is filtered by `filters`, then
+    /// warped so its corners land on `quad` (TL, TR, BR, BL). `raster` caches
+    /// the result; `stale` asks the editor to rebuild it.
+    Smart { source: SmartSource, quad: [Point; 4], filters: Vec<SmartFilter>, raster: Raster, stale: bool },
 }
 
 impl LayerKind {
@@ -241,6 +285,7 @@ impl LayerKind {
             LayerKind::Group { .. } => "group",
             LayerKind::Text { .. } => "text",
             LayerKind::Shape { .. } => "shape",
+            LayerKind::Smart { .. } => "smart",
         }
     }
 }
@@ -315,7 +360,7 @@ impl Layer {
     pub fn raster(&self) -> Option<&Raster> {
         match &self.kind {
             LayerKind::Pixel(r) => Some(r),
-            LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } => Some(raster),
+            LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } | LayerKind::Smart { raster, .. } => Some(raster),
             _ => None,
         }
     }
@@ -323,7 +368,7 @@ impl Layer {
     pub fn raster_mut(&mut self) -> Option<&mut Raster> {
         match &mut self.kind {
             LayerKind::Pixel(r) => Some(r),
-            LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } => Some(raster),
+            LayerKind::Text { raster, .. } | LayerKind::Shape { raster, .. } | LayerKind::Smart { raster, .. } => Some(raster),
             _ => None,
         }
     }

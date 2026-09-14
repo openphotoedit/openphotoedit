@@ -1,11 +1,48 @@
 [package]
 name = "editor-server"
+description = "OpenPhotoshop as one local program: the web app, its models and the native engine on a single loopback port"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
+
+[lib]
+name = "editor_server"
+path = "src/lib.rs"
 
 [[bin]]
 name = "openphotoshop"
 path = "src/main.rs"
 
+[features]
+default = ["embed"]
+# Bake apps/web/dist into the binary. Without it the server needs `--dir`.
+embed = ["dep:rust-embed"]
+
 [dependencies]
+editor-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+png.workspace = true
+
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "signal", "time", "sync"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1"
+clap = { version = "4.5", features = ["derive"] }
+rust-embed = { version = "8.5", optional = true, features = ["interpolate-folder-path", "debug-embed", "include-exclude"] }
+dirs = "6"
+sha2 = "0.10"
+getrandom = "0.3"
+percent-encoding = "2"
+httpdate = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff", "rayon"] }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

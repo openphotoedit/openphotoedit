@@ -233,6 +233,130 @@ pub fn bilinear(p: &Plane, x: f64, y: f64) -> [u8; 4] {
     out
 }
 
+
+/// A 3×3 projective transform, row-major, mapping `(x, y, 1)`.
+#[derive(Clone, Copy, Debug)]
+pub struct Homography(pub [f64; 9]);
+
+impl Homography {
+    /// The transform taking the rectangle `(0,0)-(w,h)` to `quad`
+    /// (top-left, top-right, bottom-right, bottom-left).
+    pub fn rect_to_quad(w: f64, h: f64, quad: &[Point; 4]) -> Option<Homography> {
+        let src = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+        // Solve the 8×8 system for h0..h7 (h8 = 1).
+        let mut a = [[0f64; 9]; 8];
+        for i in 0..4 {
+            let (x, y) = src[i];
+            let (u, v) = (quad[i].x, quad[i].y);
+            a[2 * i] = [x, y, 1.0, 0.0, 0.0, 0.0, -u * x, -u * y, u];
+            a[2 * i + 1] = [0.0, 0.0, 0.0, x, y, 1.0, -v * x, -v * y, v];
+        }
+        for col in 0..8 {
+            let pivot = (col..8).max_by(|&r1, &r2| a[r1][col].abs().total_cmp(&a[r2][col].abs()))?;
+            if a[pivot][col].abs() < 1e-12 {
+                return None;
+            }
+            a.swap(col, pivot);
+            for r in 0..8 {
+                if r != col {
+                    let f = a[r][col] / a[col][col];
+                    for c in col..9 {
+                        a[r][c] -= f * a[col][c];
+                    }
+                }
+            }
+        }
+        let hvals: Vec<f64> = (0..8).map(|i| a[i][8] / a[i][i]).collect();
+        Some(Homography([hvals[0], hvals[1], hvals[2], hvals[3], hvals[4], hvals[5], hvals[6], hvals[7], 1.0]))
+    }
+
+    pub fn apply(&self, x: f64, y: f64) -> (f64, f64) {
+        let m = &self.0;
+        let wz = m[6] * x + m[7] * y + m[8];
+        ((m[0] * x + m[1] * y + m[2]) / wz, (m[3] * x + m[4] * y + m[5]) / wz)
+    }
+
+    pub fn invert(&self) -> Option<Homography> {
+        let m = &self.0;
+        let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        if det.abs() < 1e-15 {
+            return None;
+        }
+        let inv = [
+            (m[4] * m[8] - m[5] * m[7]) / det,
+            (m[2] * m[7] - m[1] * m[8]) / det,
+            (m[1] * m[5] - m[2] * m[4]) / det,
+            (m[5] * m[6] - m[3] * m[8]) / det,
+            (m[0] * m[8] - m[2] * m[6]) / det,
+            (m[2] * m[3] - m[0] * m[5]) / det,
+            (m[3] * m[7] - m[4] * m[6]) / det,
+            (m[1] * m[6] - m[0] * m[7]) / det,
+            (m[0] * m[4] - m[1] * m[3]) / det,
+        ];
+        Some(Homography(inv))
+    }
+}
+
+/// Warp a plane so its rectangle lands on `quad` (document coordinates).
+/// Strong minification first downsamples the source, so the result does
+/// not alias. Returns the plane and its document origin.
+pub fn warp_to_quad(src: &Plane, quad: &[Point; 4]) -> (Plane, i32, i32) {
+    let (sw, sh) = (src.width() as f64, src.height() as f64);
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for p in quad {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    let dst = Rect::cover(x0, y0, x1 - x0, y1 - y0);
+    if dst.is_empty() || sw < 1.0 || sh < 1.0 {
+        return (Plane::new(1, 1, src.channels(), src.fill()), 0, 0);
+    }
+    // Pre-shrink when the quad is much smaller than the source.
+    let edge = |a: Point, b: Point| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    let out_w = edge(quad[0], quad[1]).max(edge(quad[3], quad[2]));
+    let out_h = edge(quad[0], quad[3]).max(edge(quad[1], quad[2]));
+    let (work, kx, ky);
+    if out_w < sw * 0.5 || out_h < sh * 0.5 {
+        let nw = (out_w.ceil() as u32).clamp(1, src.width());
+        let nh = (out_h.ceil() as u32).clamp(1, src.height());
+        work = resize_plane(src, nw, nh, Resample::Bicubic);
+        kx = sw / nw as f64;
+        ky = sh / nh as f64;
+    } else {
+        work = src.clone();
+        kx = 1.0;
+        ky = 1.0;
+    }
+    let Some(h) = Homography::rect_to_quad(sw, sh, quad).and_then(|h| h.invert()) else {
+        return (Plane::new(1, 1, src.channels(), src.fill()), 0, 0);
+    };
+    let ch = src.channels();
+    let mut out = Plane::new(dst.w as u32, dst.h as u32, ch, src.fill());
+    let band_rows = 256;
+    let mut yb = 0;
+    while yb < dst.h {
+        let bh = band_rows.min(dst.h - yb);
+        let mut data = vec![0u8; dst.w as usize * bh as usize * ch];
+        for j in 0..bh {
+            for i in 0..dst.w {
+                let (u, v) = h.apply(dst.x as f64 + i as f64 + 0.5, dst.y as f64 + (yb + j) as f64 + 0.5);
+                if u < -1.0 || v < -1.0 || u > sw + 1.0 || v > sh + 1.0 {
+                    continue;
+                }
+                let px = bilinear(&work, u / kx - 0.5, v / ky - 0.5);
+                let o = (j as usize * dst.w as usize + i as usize) * ch;
+                data[o..o + ch].copy_from_slice(&px[..ch]);
+            }
+        }
+        out.write(Rect::new(0, yb, dst.w, bh), &data);
+        yb += bh;
+    }
+    out.compact();
+    (out, dst.x, dst.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +388,22 @@ mod tests {
         let p = Plane::from_raw(4, 3, 4, &raw, [0; 4]);
         assert_eq!(flip(&flip(&p, true), true).to_raw(), raw);
         assert_eq!(flip(&p, false).get(0, 0)[0], 8);
+    }
+
+    #[test]
+    fn homography_maps_corners_and_quad_warp_scales() {
+        let q = [Point::new(10.0, 20.0), Point::new(110.0, 25.0), Point::new(100.0, 90.0), Point::new(5.0, 80.0)];
+        let h = Homography::rect_to_quad(50.0, 40.0, &q).unwrap();
+        for (i, (x, y)) in [(0.0, 0.0), (50.0, 0.0), (50.0, 40.0), (0.0, 40.0)].iter().enumerate() {
+            let (u, v) = h.apply(*x, *y);
+            assert!((u - q[i].x).abs() < 1e-6 && (v - q[i].y).abs() < 1e-6);
+        }
+        let raw: Vec<u8> = (0..20 * 10).flat_map(|_| [0u8, 200, 0, 255]).collect();
+        let p = Plane::from_raw(20, 10, 4, &raw, [0; 4]);
+        let rect = [Point::new(0.0, 0.0), Point::new(40.0, 0.0), Point::new(40.0, 20.0), Point::new(0.0, 20.0)];
+        let (out, x, y) = warp_to_quad(&p, &rect);
+        assert_eq!((x, y, out.width(), out.height()), (0, 0, 40, 20));
+        assert_eq!(out.get(20, 10), [0, 200, 0, 255]);
     }
 
     #[test]

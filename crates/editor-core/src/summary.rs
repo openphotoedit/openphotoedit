@@ -44,6 +44,21 @@ pub fn layer(l: &Layer) -> Value {
             o.insert("text".into(), serde_json::to_value(data).unwrap_or(Value::Null));
             o.insert("bounds".into(), json!(raster.doc_rect()));
         }
+        LayerKind::Smart { source, quad, filters, raster, .. } => {
+            let (w, h) = source.size();
+            o.insert(
+                "smart".into(),
+                json!({
+                    "source": match source { crate::layer::SmartSource::Pixels(_) => "pixels", crate::layer::SmartSource::Document(_) => "document" },
+                    "width": w,
+                    "height": h,
+                    "quad": quad,
+                    "filters": filters,
+                    "layers": match source { crate::layer::SmartSource::Document(d) => d.layer_count(), _ => 1 },
+                }),
+            );
+            o.insert("bounds".into(), json!(raster.doc_rect()));
+        }
         LayerKind::Shape { data, raster } => {
             o.insert("shape".into(), serde_json::to_value(data).unwrap_or(Value::Null));
             o.insert("bounds".into(), json!(raster.doc_rect()));
