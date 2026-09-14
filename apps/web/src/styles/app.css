@@ -1,0 +1,47 @@
+/* OpenPhotoshop claims accent slot 24 (pending mint — see tokens/ACCENT-SLOTS.md). One slot per application. */
+@import url("../vendor/tokens/styles.css");
+@import url("./components.css");
+
+:root {
+  /* Until slot 24 is minted, the accent is used only as a 16% tint chip and
+     a 7px dot, per the design system. */
+  --brand: var(--accent-2);
+  --ops-pasteboard: var(--bg-sunken);
+  --ops-panel: var(--surface-card);
+  --ops-toolbar-w: 48px;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-page);
+  color: var(--text-body);
+  font: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

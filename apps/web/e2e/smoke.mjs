@@ -1,0 +1,22 @@
+// Quick end-to-end smoke: open a photo in Lite, drag a slider, screenshot.
+import { chromium } from "playwright";
+const url = process.env.URL ?? "http://localhost:5203/";
+const photo = process.argv[2];
+const out = process.argv[3] ?? "smoke.png";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const logs = [];
+page.on("console", (m) => logs.push(`${m.type()}: ${m.text()}`));
+page.on("pageerror", (e) => logs.push(`pageerror: ${e.message}`));
+await page.goto(url);
+await page.getByTestId("choose-lite").click();
+const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByTestId("open").click()]);
+await chooser.setFiles(photo);
+await page.waitForFunction(() => !document.querySelector('[data-testid="busy"]'));
+await page.waitForTimeout(800);
+const slider = page.locator('input[type="range"]').first();
+await slider.fill("1.2");
+await page.waitForTimeout(800);
+await page.screenshot({ path: out });
+console.log(logs.join("\n"));
+await browser.close();

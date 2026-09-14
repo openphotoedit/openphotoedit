@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+# SIMD is in every browser this app supports (Safari 16.4+, Chrome 91+,
+# Firefox 89+); the compositor's inner loops lean on it.
+rustflags = ["-C", "target-feature=+simd128"]
