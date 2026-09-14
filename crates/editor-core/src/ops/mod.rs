@@ -2,15 +2,19 @@
 //! these, sent as JSON with an `op` field namespaced by domain:
 //! `layer.*`, `image.*`, `select.*`, `filter.*`, `paint.*`, `ai.*`.
 //!
-//! Each domain lives in its own file with its own serde enum, so the domains
-//! can grow independently. `Editor::exec` routes by the prefix.
+//! The core domains (`doc`, `layer`, `image`, `select`) live here. Other
+//! crates (filters, paint, selection algorithms, transforms) register a
+//! [`DomainHandler`] with the editor for their prefix; `Editor::exec` routes
+//! by the prefix and falls back to registered handlers when a core domain
+//! does not recognise an operation.
 
-pub mod ai;
-pub mod filter;
 pub mod image;
 pub mod layer;
-pub mod paint;
 pub mod select;
+
+/// A command handler for one domain prefix. Returns
+/// `Err(EditorError::UnknownOp)` for operations it does not handle.
+pub type DomainHandler = fn(serde_json::Value, &mut Document, &[u8]) -> Result<Applied>;
 
 use crate::document::Document;
 use crate::geom::Rect;

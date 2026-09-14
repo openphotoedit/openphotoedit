@@ -84,6 +84,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "editor-filters"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "editor-paint"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "editor-project"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "editor-psd"
 version = "0.1.0"
 dependencies = [
@@ -94,8 +121,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "editor-select"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "editor-server"
 version = "0.1.0"
+
+[[package]]
+name = "editor-transform"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "editor-wasm"
@@ -104,7 +149,12 @@ dependencies = [
  "console_error_panic_hook",
  "editor-ai",
  "editor-core",
+ "editor-filters",
+ "editor-paint",
+ "editor-project",
  "editor-psd",
+ "editor-select",
+ "editor-transform",
  "js-sys",
  "png",
  "serde",

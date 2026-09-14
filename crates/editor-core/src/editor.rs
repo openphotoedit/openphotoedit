@@ -10,6 +10,7 @@ use crate::summary;
 
 pub struct Editor {
     pub doc: Document,
+    domains: Vec<(String, ops::DomainHandler)>,
     pub history: crate::history::History,
     renderer: Renderer,
     /// Increments on every change, so the UI can tell whether its cached
@@ -25,7 +26,24 @@ impl Default for Editor {
 
 impl Editor {
     pub fn new(width: u32, height: u32) -> Editor {
-        Editor { doc: Document::new(width, height), history: Default::default(), renderer: Renderer::new(), revision: 0 }
+        Editor { doc: Document::new(width, height), domains: Vec::new(), history: Default::default(), renderer: Renderer::new(), revision: 0 }
+    }
+
+    /// Route `prefix.*` operations to `handler`. Several handlers may share a
+    /// prefix; each is tried in registration order until one accepts.
+    pub fn register_domain(&mut self, prefix: &str, handler: ops::DomainHandler) {
+        self.domains.push((prefix.to_string(), handler));
+    }
+
+    fn run_extensions(&mut self, domain: &str, op: &str, v: Value, bytes: &[u8]) -> Result<Applied> {
+        let handlers: Vec<ops::DomainHandler> = self.domains.iter().filter(|(p, _)| p == domain).map(|(_, h)| *h).collect();
+        for h in handlers {
+            match h(v.clone(), &mut self.doc, bytes) {
+                Err(EditorError::UnknownOp(_)) => continue,
+                other => return other,
+            }
+        }
+        Err(EditorError::UnknownOp(op.to_string()))
     }
 
     /// Run a command given as JSON text. `bytes` carries pixel payloads.
@@ -65,14 +83,24 @@ impl Editor {
 
         let before = self.doc.clone();
         let domain = op.split('.').next().unwrap_or("");
-        let applied: Result<Applied> = match domain {
-            "doc" | "layer" => ops::layer::apply(v, &mut self.doc, bytes),
-            "image" => ops::image::apply(v, &mut self.doc, bytes),
-            "select" => ops::select::apply(v, &mut self.doc, bytes),
-            "filter" => ops::parse::<ops::filter::Cmd>(v).and_then(|c| ops::filter::apply(c, &mut self.doc, bytes)),
-            "paint" => ops::parse::<ops::paint::Cmd>(v).and_then(|c| ops::paint::apply(c, &mut self.doc, bytes)),
-            "ai" => ops::parse::<ops::ai::Cmd>(v).and_then(|c| ops::ai::apply(c, &mut self.doc, bytes)),
-            _ => Err(EditorError::UnknownOp(op.clone())),
+        let core: Option<Result<Applied>> = match domain {
+            "doc" | "layer" => Some(ops::layer::apply(v.clone(), &mut self.doc, bytes)),
+            "image" => Some(ops::image::apply(v.clone(), &mut self.doc, bytes)),
+            "select" => Some(ops::select::apply(v.clone(), &mut self.doc, bytes)),
+            _ => None,
+        };
+        let applied = match core {
+            // A core domain that does not know the operation defers to
+            // extensions registered for the same prefix.
+            Some(Err(EditorError::Json(msg))) if msg.contains("unknown variant") => {
+                self.doc = before.clone();
+                self.run_extensions(domain, &op, v, bytes).map_err(|e| match e {
+                    EditorError::UnknownOp(_) => EditorError::Json(msg),
+                    other => other,
+                })
+            }
+            Some(r) => r,
+            None => self.run_extensions(domain, &op, v, bytes),
         };
         let applied = match applied {
             Ok(a) => a,

@@ -9,6 +9,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 editor-core.workspace = true
+editor-filters.workspace = true
+editor-paint.workspace = true
+editor-select.workspace = true
+editor-transform.workspace = true
+editor-project.workspace = true
 editor-psd.workspace = true
 editor-ai.workspace = true
 serde.workspace = true

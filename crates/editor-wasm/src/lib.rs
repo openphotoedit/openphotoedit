@@ -12,7 +12,18 @@ use editor_core::render::{render_layer_alone, render_view, to_u8, View};
 use editor_core::Editor;
 use wasm_bindgen::prelude::*;
 
+mod ai;
 mod encode;
+mod project;
+mod psd;
+
+/// Every domain crate, registered once per engine.
+fn register_domains(ed: &mut Editor) {
+    editor_filters::register(ed);
+    editor_paint::register(ed);
+    editor_select::register(ed);
+    editor_transform::register(ed);
+}
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -38,7 +49,9 @@ fn err(e: impl std::fmt::Display) -> JsError {
 impl Engine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Engine {
-        Engine { ed: Editor::new(1, 1) }
+        let mut ed = Editor::new(1, 1);
+        register_domains(&mut ed);
+        Engine { ed }
     }
 
     /// Run a command. Returns the result JSON.

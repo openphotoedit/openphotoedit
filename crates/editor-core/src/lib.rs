@@ -15,6 +15,7 @@ pub mod geom;
 pub mod history;
 pub mod layer;
 pub mod ops;
+pub mod pixels;
 pub mod plane;
 pub mod render;
 pub mod selection;

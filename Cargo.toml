@@ -2,6 +2,11 @@
 resolver = "2"
 members = [
   "crates/editor-core",
+  "crates/editor-filters",
+  "crates/editor-paint",
+  "crates/editor-select",
+  "crates/editor-transform",
+  "crates/editor-project",
   "crates/editor-psd",
   "crates/editor-ai",
   "crates/editor-wasm",
@@ -16,6 +21,11 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 editor-core = { path = "crates/editor-core" }
+editor-filters = { path = "crates/editor-filters" }
+editor-paint = { path = "crates/editor-paint" }
+editor-select = { path = "crates/editor-select" }
+editor-transform = { path = "crates/editor-transform" }
+editor-project = { path = "crates/editor-project" }
 editor-psd = { path = "crates/editor-psd" }
 editor-ai = { path = "crates/editor-ai" }
 serde = { version = "1", features = ["derive"] }
