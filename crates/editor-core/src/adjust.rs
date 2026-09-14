@@ -1023,14 +1023,21 @@ impl Develop {
         let bw = BlackWhite::default();
         let (cx, cy) = (ctx.doc_w as f64 / 2.0, ctx.doc_h as f64 / 2.0);
         let diag = (cx * cx + cy * cy).sqrt().max(1.0);
+        // Exposure and white balance happen in linear light; precompute them
+        // as one table per channel instead of two powf calls per sample.
+        let light = if self.exposure != 0.0 || t != 0.0 || tn != 0.0 {
+            Some([0usize, 1, 2].map(|k| Lut::from_fn(|v| linear_to_srgb((srgb_to_linear(v) * ev * wb[k]).max(0.0)).min(1.0))))
+        } else {
+            None
+        };
         for j in 0..h {
             let doc_y = ctx.y0 + (j as f64 + 0.5) * ctx.step;
             for i in 0..w {
                 let o = (j * w + i) * 4;
                 let px = &mut buf[o..o + 4];
                 let mut c = [px[0], px[1], px[2]];
-                if self.exposure != 0.0 || t != 0.0 || tn != 0.0 {
-                    c = std::array::from_fn(|k| linear_to_srgb((srgb_to_linear(c[k]) * ev * wb[k]).max(0.0)).min(1.0));
+                if let Some(l) = &light {
+                    c = [l[0].eval(c[0]), l[1].eval(c[1]), l[2].eval(c[2])];
                 }
                 let l0 = luma(c);
                 let mut l = tone.eval(l0);

@@ -114,6 +114,7 @@ impl Renderer {
         }
 
         let mut i = start;
+        let mut fresh = start == 0;
         while i < doc.layers.len() {
             if save_at == Some(i) {
                 self.checkpoints.retain(|cp| cp.view == view);
@@ -122,7 +123,9 @@ impl Renderer {
                     self.checkpoints.remove(0);
                 }
             }
-            i = composite_run(&doc.layers, i, &mut buf, &ctx, doc);
+            let drew = doc.layers[i].visible;
+            i = composite_run_at(&doc.layers, i, &mut buf, &ctx, doc, fresh);
+            fresh &= !drew;
         }
         self.last = Some((view, sigs));
         buf
@@ -133,10 +136,7 @@ impl Renderer {
 pub fn render_view(doc: &Document, view: View) -> Vec<f32> {
     let ctx = view.ctx(doc);
     let mut buf = vec![0f32; view.width * view.height * 4];
-    let mut i = 0;
-    while i < doc.layers.len() {
-        i = composite_run(&doc.layers, i, &mut buf, &ctx, doc);
-    }
+    render_list_fresh(&doc.layers, &mut buf, &ctx, doc);
     buf
 }
 
@@ -145,11 +145,19 @@ pub fn render_view(doc: &Document, view: View) -> Vec<f32> {
 pub fn render_layers(layers: &[Layer], doc: &Document, view: View) -> Vec<f32> {
     let ctx = view.ctx(doc);
     let mut buf = vec![0f32; view.width * view.height * 4];
-    let mut i = 0;
-    while i < layers.len() {
-        i = composite_run(layers, i, &mut buf, &ctx, doc);
-    }
+    render_list_fresh(layers, &mut buf, &ctx, doc);
     buf
+}
+
+/// Composite a list onto a buffer that starts fully transparent.
+fn render_list_fresh(layers: &[Layer], buf: &mut [f32], ctx: &ApplyCtx, doc: &Document) {
+    let mut i = 0;
+    let mut fresh = true;
+    while i < layers.len() {
+        let drew = layers[i].visible;
+        i = composite_run_at(layers, i, buf, ctx, doc, fresh);
+        fresh &= !drew;
+    }
 }
 
 /// Flatten the whole document at full resolution, in horizontal strips so
@@ -178,6 +186,11 @@ pub fn to_u8(buf: &[f32], out: &mut [u8]) {
 /// Composite layer `i` and any layers clipped to it. Returns the index of
 /// the next unprocessed layer.
 fn composite_run(layers: &[Layer], i: usize, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document) -> usize {
+    composite_run_at(layers, i, buf, ctx, doc, false)
+}
+
+/// `fresh`: the buffer is known to be fully transparent.
+fn composite_run_at(layers: &[Layer], i: usize, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document, fresh: bool) -> usize {
     let base = &layers[i];
     let mut end = i + 1;
     while end < layers.len() && layers[end].clip {
@@ -187,14 +200,14 @@ fn composite_run(layers: &[Layer], i: usize, buf: &mut [f32], ctx: &ApplyCtx, do
     let base_takes_clip = !matches!(base.kind, LayerKind::Adjustment(_)) && !base.clip;
     if clipped.is_empty() || !base_takes_clip {
         if base.visible {
-            composite_layer(base, buf, ctx, doc);
+            composite_layer(base, buf, ctx, doc, fresh);
         }
         if !base_takes_clip {
             // An adjustment layer cannot be a clipping base: the clipped
             // layers composite normally.
             for l in clipped {
                 if l.visible {
-                    composite_layer(l, buf, ctx, doc);
+                    composite_layer(l, buf, ctx, doc, false);
                 }
             }
         }
@@ -212,10 +225,10 @@ fn composite_run(layers: &[Layer], i: usize, buf: &mut [f32], ctx: &ApplyCtx, do
     let mut plain = base.clone_shallow_for_clip();
     plain.opacity = base.fill_opacity;
     plain.blend = BlendMode::Normal;
-    composite_layer(&plain, &mut group, ctx, doc);
+    composite_layer(&plain, &mut group, ctx, doc, true);
     let alpha: Vec<f32> = group.chunks_exact(4).map(|p| p[3]).collect();
     for l in clipped.iter().filter(|l| l.visible) {
-        composite_layer(l, &mut group, ctx, doc);
+        composite_layer(l, &mut group, ctx, doc, false);
         for (p, a) in group.chunks_exact_mut(4).zip(alpha.iter()) {
             p[3] = *a;
         }
@@ -231,10 +244,16 @@ impl Layer {
     }
 }
 
-fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document) {
+fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document, fresh: bool) {
     let n = ctx.width * ctx.height;
     let mask = layer.mask.as_ref().filter(|m| m.enabled).map(|m| sample_mask(m, ctx));
     match &layer.kind {
+        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. }
+            if fresh && mask.is_none() && layer.blend == BlendMode::Normal && layer.opacity * layer.fill_opacity >= 1.0 =>
+        {
+            // First layer onto a transparent buffer: the result is the layer.
+            r.plane.resample(ctx.x0 - r.x as f64, ctx.y0 - r.y as f64, ctx.step, ctx.width, ctx.height, buf);
+        }
         LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } => {
             let mut src = vec![0f32; n * 4];
             r.plane.resample(ctx.x0 - r.x as f64, ctx.y0 - r.y as f64, ctx.step, ctx.width, ctx.height, &mut src);
@@ -243,6 +262,10 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
         LayerKind::Fill(fill) => {
             let src = render_fill(fill, ctx);
             blend_buffer(buf, &src, mask.as_deref(), layer.opacity * layer.fill_opacity, layer.blend, ctx);
+        }
+        LayerKind::Adjustment(adj) if mask.is_none() && layer.blend == BlendMode::Normal && layer.opacity * layer.fill_opacity >= 1.0 => {
+            // The common case: full strength, no mask. Adjust in place.
+            adj.apply(buf, ctx);
         }
         LayerKind::Adjustment(adj) => {
             let mut adjusted = buf.to_vec();
@@ -281,10 +304,7 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
                 }
             } else {
                 let mut group = vec![0f32; n * 4];
-                let mut i = 0;
-                while i < children.len() {
-                    i = composite_run(children, i, &mut group, ctx, doc);
-                }
+                render_list_fresh(children, &mut group, ctx, doc);
                 blend_buffer(buf, &group, mask.as_deref(), op, layer.blend, ctx);
             }
         }
@@ -295,6 +315,32 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
 /// per-pixel mask.
 fn blend_buffer(buf: &mut [f32], src: &[f32], mask: Option<&[f32]>, opacity: f32, mode: BlendMode, ctx: &ApplyCtx) {
     let w = ctx.width;
+    if mode == BlendMode::Normal {
+        // Source-over without the general blend machinery.
+        for k in 0..(ctx.width * ctx.height) {
+            let o = k * 4;
+            let mut sa = src[o + 3] * opacity;
+            if let Some(m) = mask {
+                sa *= m[k];
+            }
+            if sa <= 0.0 {
+                continue;
+            }
+            let d = &mut buf[o..o + 4];
+            if sa >= 1.0 {
+                d.copy_from_slice(&[src[o], src[o + 1], src[o + 2], 1.0]);
+                continue;
+            }
+            let ab = d[3] * (1.0 - sa);
+            let ao = sa + ab;
+            let inv = 1.0 / ao;
+            d[0] = (src[o] * sa + d[0] * ab) * inv;
+            d[1] = (src[o + 1] * sa + d[1] * ab) * inv;
+            d[2] = (src[o + 2] * sa + d[2] * ab) * inv;
+            d[3] = ao;
+        }
+        return;
+    }
     for k in 0..(ctx.width * ctx.height) {
         let o = k * 4;
         let mut sa = src[o + 3] * opacity;

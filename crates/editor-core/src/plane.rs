@@ -375,6 +375,8 @@ impl Plane {
         ((self.width >> level).max(1), (self.height >> level).max(1))
     }
 
+    #[allow(dead_code)]
+
     fn level_pixel(&self, level: u32, lx: u32, ly: u32) -> [u8; 4] {
         let shift = TILE_SHIFT - level;
         let size = TILE >> level;
@@ -442,50 +444,99 @@ impl Plane {
         let level = (step.log2().floor() as u32).min(MAX_LEVEL);
         let lscale = (1u32 << level) as f64;
         let (lw, lh) = self.level_dims(level);
-        let fetch = |lx: i64, ly: i64| -> [u8; 4] {
-            if lx < 0 || ly < 0 || lx >= lw as i64 || ly >= lh as i64 {
-                self.fill
-            } else {
-                self.level_pixel(level, lx as u32, ly as u32)
-            }
-        };
-        for j in 0..out_h {
-            let fy = (y0 + (j as f64 + 0.5) * step) / lscale - 0.5;
-            let iy = fy.floor();
-            let wy = (fy - iy) as f32;
-            let iy = iy as i64;
-            for i in 0..out_w {
+        let size = (TILE >> level) as usize;
+        let shift = TILE_SHIFT - level;
+        let cols = self.cols as usize;
+        let fill_u8 = self.fill;
+
+        // Horizontal sample positions are the same on every row.
+        let xs: Vec<(i64, f32)> = (0..out_w)
+            .map(|i| {
                 let fx = (x0 + (i as f64 + 0.5) * step) / lscale - 0.5;
                 let ix = fx.floor();
-                let wx = (fx - ix) as f32;
-                let ix = ix as i64;
-                let p00 = fetch(ix, iy);
-                let p10 = fetch(ix + 1, iy);
-                let p01 = fetch(ix, iy + 1);
-                let p11 = fetch(ix + 1, iy + 1);
+                (ix as i64, (fx - ix) as f32)
+            })
+            .collect();
+
+        // One level-row of tiles: the data slice for each tile column plus
+        // the row's offset inside the tile. Rebuilt only when the tile row
+        // changes, so the inner loop is plain indexing.
+        type Row<'a> = Option<(Vec<Option<&'a [u8]>>, usize)>;
+        let make_row = |ly: i64| -> Row<'_> {
+            if ly < 0 || ly >= lh as i64 {
+                return None;
+            }
+            let ty = (ly as u32) >> shift;
+            let tiles = (0..cols).map(|tx| self.tile(tx as u32, ty).map(|t| t.level(ch, level))).collect();
+            Some((tiles, (ly as usize) & (size - 1)))
+        };
+        let fetch = |row: &Row<'_>, lx: i64| -> [u8; 4] {
+            let Some((tiles, local_y)) = row else { return fill_u8 };
+            if lx < 0 || lx >= lw as i64 {
+                return fill_u8;
+            }
+            match tiles[(lx as usize) >> shift] {
+                None => fill_u8,
+                Some(data) => {
+                    let k = (local_y * size + ((lx as usize) & (size - 1))) * ch;
+                    let mut px = [0u8; 4];
+                    px[..ch].copy_from_slice(&data[k..k + ch]);
+                    px
+                }
+            }
+        };
+
+        let mut cached: [(i64, Row<'_>); 2] = [(i64::MIN, None), (i64::MIN, None)];
+        let tile_row = |ly: i64| -> i64 { if ly < 0 || ly >= lh as i64 { -1 } else { ((ly as u32) >> shift) as i64 } };
+        for j in 0..out_h {
+            let fy = (y0 + (j as f64 + 0.5) * step) / lscale - 0.5;
+            let iyf = fy.floor();
+            let wy = (fy - iyf) as f32;
+            let iy = iyf as i64;
+            // Rows iy and iy+1, each possibly in a different tile row.
+            for (slot, ly) in [(0usize, iy), (1usize, iy + 1)] {
+                let key = tile_row(ly);
+                if cached[slot].0 != key || key < 0 {
+                    // Reuse the other slot when it holds this tile row.
+                    let other = 1 - slot;
+                    if cached[other].0 == key && key >= 0 {
+                        let (tiles, _) = cached[other].1.clone().unwrap();
+                        cached[slot] = (key, Some((tiles, (ly as usize) & (size - 1))));
+                    } else {
+                        cached[slot] = (key, make_row(ly));
+                    }
+                } else if let Some((_, local)) = cached[slot].1.as_mut() {
+                    *local = (ly as usize) & (size - 1);
+                }
+            }
+            let (r0, r1) = (&cached[0].1, &cached[1].1);
+            let orow = &mut out[j * out_w * ch..(j + 1) * out_w * ch];
+            for (i, &(ix, wx)) in xs.iter().enumerate() {
+                let p00 = fetch(r0, ix);
+                let p10 = fetch(r0, ix + 1);
+                let p01 = fetch(r1, ix);
+                let p11 = fetch(r1, ix + 1);
                 let w00 = (1.0 - wx) * (1.0 - wy);
                 let w10 = wx * (1.0 - wy);
                 let w01 = (1.0 - wx) * wy;
                 let w11 = wx * wy;
-                let o = (j * out_w + i) * ch;
+                let o = i * ch;
                 if ch == 4 {
-                    let a = |p: [u8; 4]| p[3] as f32;
-                    let sa = a(p00) * w00 + a(p10) * w10 + a(p01) * w01 + a(p11) * w11;
+                    let (a00, a10, a01, a11) = (p00[3] as f32 * w00, p10[3] as f32 * w10, p01[3] as f32 * w01, p11[3] as f32 * w11);
+                    let sa = a00 + a10 + a01 + a11;
                     if sa > 0.0 {
+                        let inv = 1.0 / (sa * 255.0);
                         for c in 0..3 {
-                            let v = p00[c] as f32 * a(p00) * w00
-                                + p10[c] as f32 * a(p10) * w10
-                                + p01[c] as f32 * a(p01) * w01
-                                + p11[c] as f32 * a(p11) * w11;
-                            out[o + c] = v / sa / 255.0;
+                            let v = p00[c] as f32 * a00 + p10[c] as f32 * a10 + p01[c] as f32 * a01 + p11[c] as f32 * a11;
+                            orow[o + c] = v * inv;
                         }
                     } else {
-                        out[o..o + 3].fill(0.0);
+                        orow[o..o + 3].fill(0.0);
                     }
-                    out[o + 3] = sa / 255.0;
+                    orow[o + 3] = sa / 255.0;
                 } else {
                     let v = p00[0] as f32 * w00 + p10[0] as f32 * w10 + p01[0] as f32 * w01 + p11[0] as f32 * w11;
-                    out[o] = v / 255.0;
+                    orow[o] = v / 255.0;
                 }
             }
         }
