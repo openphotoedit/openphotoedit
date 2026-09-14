@@ -10,8 +10,29 @@
 
   let dragging = $state(false);
 
+  /** The native server opens a file by handing the page a one-time token. */
+  async function openFromToken() {
+    const params = new URLSearchParams(location.search);
+    const token = params.get("open");
+    if (!token) return;
+    history.replaceState(null, "", location.pathname + location.hash);
+    try {
+      const res = await fetch(`./api/file/${encodeURIComponent(token)}`);
+      if (!res.ok) throw new Error(res.status === 410 ? "that file link has already been used" : `could not fetch the file (${res.status})`);
+      const name = decodeURIComponent(res.headers.get("X-File-Name") ?? "Untitled");
+      const blob = await res.blob();
+      if (!editor.profile) editor.setProfile("pro");
+      await openFile(new File([blob], name, { type: blob.type }));
+    } catch (e) {
+      editor.error(e);
+    }
+  }
+
   onMount(() => {
-    editor.init().catch((e) => editor.error(e));
+    editor
+      .init()
+      .then(openFromToken)
+      .catch((e) => editor.error(e));
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (editor.dirty) e.preventDefault();
     };
