@@ -1,0 +1,11 @@
+target/
+node_modules/
+dist/
+.vendor/
+apps/web/public/models/
+apps/web/public/ort/
+apps/web/src/wasm-gen/
+test-results/
+playwright-report/
+*.part
+.DS_Store
