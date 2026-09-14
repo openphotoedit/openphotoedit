@@ -1,11 +1,10 @@
-/* OpenPhotoshop claims accent slot 24 (pending mint — see tokens/ACCENT-SLOTS.md). One slot per application. */
+/* OpenPhotoshop claims accent slot 24 (iris). One slot per application. */
 @import url("../vendor/tokens/styles.css");
 @import url("./components.css");
 
 :root {
-  /* Until slot 24 is minted, the accent is used only as a 16% tint chip and
-     a 7px dot, per the design system. */
-  --brand: var(--accent-2);
+  /* The accent is only ever a 16% tint chip or a 7px dot (design system). */
+  --brand: var(--accent-24);
   --ops-pasteboard: var(--bg-sunken);
   --ops-panel: var(--surface-card);
   --ops-toolbar-w: 48px;

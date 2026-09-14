@@ -47,12 +47,13 @@
     return ctx.createPattern(c, "repeat")!;
   }
 
-  /** Device-pixel geometry of the current view. */
-  function geometry() {
+  /** Device-pixel geometry of the current view. `quality` < 1 renders
+   *  fewer pixels (drawn scaled up) while the user is dragging. */
+  function geometry(quality = 1) {
     const s = editor.summary!;
-    const W = Math.round(editor.viewport.width * dpr);
-    const H = Math.round(editor.viewport.height * dpr);
-    const scale = editor.view.zoom * dpr;
+    const W = Math.round(editor.viewport.width * dpr * quality);
+    const H = Math.round(editor.viewport.height * dpr * quality);
+    const scale = editor.view.zoom * dpr * quality;
     const x0 = editor.view.cx - W / 2 / scale;
     const y0 = editor.view.cy - H / 2 / scale;
     const i0 = Math.max(0, Math.floor((0 - x0) * scale));
@@ -85,20 +86,25 @@
     }
   }
 
-  async function renderNow() {
+  let pendingQuality = 1;
+
+  async function renderNow(quality = 1) {
     if (!editor.summary || !editor.hasDocument) {
       drawFrame();
       return;
     }
     if (inFlight) {
       pending = true;
+      pendingQuality = quality;
       return;
     }
     inFlight = true;
     try {
       do {
         pending = false;
-        const g = geometry();
+        const g = geometry(quality);
+        quality = pendingQuality;
+        pendingQuality = 1;
         if (g.w === 0 || g.h === 0) {
           frame = null;
           drawFrame();
@@ -345,6 +351,10 @@
   });
 
   // Re-render whenever the document, the view or an explicit tick changes.
+  // Changes arriving in quick succession (a drag, a slider, a pinch) render
+  // at half resolution, then one full-resolution frame follows when they stop.
+  let lastChange = 0;
+  let refineTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     void editor.summary?.revision;
     void editor.view.cx;
@@ -352,8 +362,17 @@
     void editor.view.zoom;
     void editor.renderTick;
     void editor.hasDocument;
+    const now = performance.now();
+    const rapid = now - lastChange < 180 && dpr * editor.viewport.width * editor.viewport.height > 900_000;
+    lastChange = now;
     drawFrame();
-    renderNow();
+    clearTimeout(refineTimer);
+    if (rapid) {
+      renderNow(0.5);
+      refineTimer = setTimeout(() => renderNow(1), 220);
+    } else {
+      renderNow(1);
+    }
   });
 
   $effect(() => {
