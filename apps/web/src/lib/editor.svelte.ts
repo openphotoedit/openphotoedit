@@ -89,11 +89,29 @@ export class EditorStore {
     return this.summary ? findLayer(this.summary.layers, this.summary.active) : null;
   }
 
+  /**
+   * Listeners told about every successful command (Actions recording, the
+   * step list). Add with `editor.onExec.add(fn)`; remove with `.delete(fn)`.
+   * `bytes` is only present for commands that carried a payload.
+   */
+  onExec = new Set<(cmd: Record<string, unknown>, result: ExecResult, hadBytes: boolean) => void>();
+
   /** Run a command; failures become an error toast and resolve to null. */
   async exec(cmd: Record<string, unknown>, bytes?: Uint8Array | Uint8ClampedArray, opts: { quiet?: boolean } = {}): Promise<ExecResult | null> {
     try {
+      const hadBytes = !!bytes && bytes.byteLength > 0;
       const r = await this.engine.exec(cmd, bytes);
       if (r.changed) this.dirty = true;
+      for (const fn of this.onExec) {
+        try {
+          fn(cmd, r, hadBytes);
+        } catch (e) {
+          console.error("onExec listener failed", e);
+        }
+      }
+      if (Array.isArray((r as { warnings?: unknown }).warnings)) {
+        for (const w of (r as { warnings: string[] }).warnings) this.toast(w, "info");
+      }
       return r;
     } catch (e) {
       if (!opts.quiet) this.error(e);
