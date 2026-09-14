@@ -21,6 +21,7 @@ pub fn layer(l: &Layer) -> Value {
         "colorLabel": l.color_label,
         "rev": l.rev,
         "provenance": l.provenance,
+        "effects": l.effects,
         "mask": l.mask.as_ref().map(|m| json!({ "enabled": m.enabled, "linked": m.linked, "density": m.density })),
     });
     let o = v.as_object_mut().unwrap();

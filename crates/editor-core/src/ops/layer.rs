@@ -125,6 +125,9 @@ pub enum Cmd {
     #[serde(rename = "layer.rasterize")]
     Rasterize { id: LayerId },
 
+    /// Replace the layer style; `null` clears it.
+    #[serde(rename = "layer.set-effects")]
+    SetEffects { id: LayerId, effects: Option<crate::effects::LayerEffects> },
     #[serde(rename = "layer.add-mask")]
     AddMask { #[serde(default)] id: Option<LayerId>, from: MaskFrom },
     #[serde(rename = "layer.delete-mask")]
@@ -634,6 +637,20 @@ pub fn run(cmd: Cmd, doc: &mut Document, bytes: &[u8]) -> Result<Applied> {
             let m = layer_mut(doc, id)?;
             m.kind = LayerKind::Pixel(raster);
             Ok(Applied::step("Rasterize Layer"))
+        }
+        Cmd::SetEffects { id, effects } => {
+            let l = layer_mut(doc, id)?;
+            if l.is_group() && l.children().is_some() {
+                if let LayerKind::Group { pass_through: true, .. } = l.kind {
+                    // Photoshop renders a styled group in isolation.
+                    if let LayerKind::Group { pass_through, .. } = &mut l.kind {
+                        *pass_through = effects.is_none();
+                    }
+                }
+            }
+            let label = if effects.is_some() { "Layer Style" } else { "Clear Layer Style" };
+            l.effects = effects;
+            Ok(Applied::step(label).merge(format!("effects:{id}")))
         }
         Cmd::AddMask { id, from } => {
             let id = target_id(doc, id)?;

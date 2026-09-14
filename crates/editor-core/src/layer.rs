@@ -261,6 +261,8 @@ pub struct Layer {
     /// 0 = none, 1..7 = Photoshop's label colours.
     pub color_label: u8,
     pub mask: Option<LayerMask>,
+    /// Layer style (drop shadow, stroke, …).
+    pub effects: Option<crate::effects::LayerEffects>,
     pub kind: LayerKind,
     pub rev: u64,
     /// Where this layer came from, for Content Credentials: "ai:<model>" etc.
@@ -280,6 +282,7 @@ impl Layer {
             locks: Locks::default(),
             color_label: 0,
             mask: None,
+            effects: None,
             kind,
             rev: next_rev(),
             provenance: Vec::new(),

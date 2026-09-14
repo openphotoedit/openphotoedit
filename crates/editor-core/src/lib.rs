@@ -11,6 +11,7 @@ pub mod blend;
 pub mod color;
 pub mod document;
 pub mod editor;
+pub mod effects;
 pub mod geom;
 pub mod history;
 pub mod layer;

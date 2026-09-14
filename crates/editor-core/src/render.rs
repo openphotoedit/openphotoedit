@@ -246,6 +246,11 @@ impl Layer {
 
 fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document, fresh: bool) {
     let n = ctx.width * ctx.height;
+    if let Some(fx) = layer.effects.as_ref().filter(|fx| fx.any_active()) {
+        if composite_styled(layer, fx, buf, ctx, doc) {
+            return;
+        }
+    }
     let mask = layer.mask.as_ref().filter(|m| m.enabled).map(|m| sample_mask(m, ctx));
     match &layer.kind {
         LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. }
@@ -309,6 +314,63 @@ fn composite_layer(layer: &Layer, buf: &mut [f32], ctx: &ApplyCtx, doc: &Documen
             }
         }
     }
+}
+
+/// A layer with a style: render its content with an apron wide enough for
+/// the effects, composite effects and content over a padded copy of the
+/// backdrop, and copy the visible part back. Returns false for layer kinds
+/// that take no style.
+fn composite_styled(layer: &Layer, fx: &crate::effects::LayerEffects, buf: &mut [f32], ctx: &ApplyCtx, doc: &Document) -> bool {
+    use crate::effects::{composite_with_effects, EffectCtx};
+    let apron = match &layer.kind {
+        LayerKind::Pixel(_) | LayerKind::Text { .. } | LayerKind::Shape { .. } => ((fx.reach() as f64 / ctx.step).ceil() as usize + 2).min(2048),
+        LayerKind::Group { .. } | LayerKind::Fill(_) => ((fx.reach() as f64 / ctx.step).ceil() as usize + 2).min(2048),
+        LayerKind::Adjustment(_) => return false,
+    };
+    let (w, h) = (ctx.width + 2 * apron, ctx.height + 2 * apron);
+    let ext = ApplyCtx { x0: ctx.x0 - apron as f64 * ctx.step, y0: ctx.y0 - apron as f64 * ctx.step, width: w, height: h, ..*ctx };
+    let content: Vec<f32> = match &layer.kind {
+        LayerKind::Pixel(r) | LayerKind::Text { raster: r, .. } | LayerKind::Shape { raster: r, .. } => {
+            let mut c = vec![0f32; w * h * 4];
+            r.plane.resample(ext.x0 - r.x as f64, ext.y0 - r.y as f64, ext.step, w, h, &mut c);
+            c
+        }
+        LayerKind::Fill(f) => render_fill(f, &ext),
+        LayerKind::Group { children, .. } => {
+            let mut g = vec![0f32; w * h * 4];
+            render_list_fresh(children, &mut g, &ext, doc);
+            g
+        }
+        LayerKind::Adjustment(_) => unreachable!(),
+    };
+    let mut strength = vec![layer.opacity; w * h];
+    if let Some(m) = layer.mask.as_ref().filter(|m| m.enabled) {
+        let mv = sample_mask(m, &ext);
+        for (s, v) in strength.iter_mut().zip(mv.iter()) {
+            *s *= v;
+        }
+    }
+    let mut back = vec![0f32; w * h * 4];
+    for y in 0..ctx.height {
+        let src = y * ctx.width * 4;
+        let dst = ((y + apron) * w + apron) * 4;
+        back[dst..dst + ctx.width * 4].copy_from_slice(&buf[src..src + ctx.width * 4]);
+    }
+    let bounds = layer.content_bounds().unwrap_or(Rect::new(0, 0, doc.width as i32, doc.height as i32));
+    let ectx = EffectCtx {
+        scale: (1.0 / ctx.step) as f32,
+        x0: ext.x0,
+        y0: ext.y0,
+        step: ext.step,
+        bounds: (bounds.x as f64, bounds.y as f64, bounds.w as f64, bounds.h as f64),
+    };
+    composite_with_effects(fx, &mut back, &content, w, h, &strength, layer.fill_opacity, layer.blend, &ectx);
+    for y in 0..ctx.height {
+        let dst = y * ctx.width * 4;
+        let src = ((y + apron) * w + apron) * 4;
+        buf[dst..dst + ctx.width * 4].copy_from_slice(&back[src..src + ctx.width * 4]);
+    }
+    true
 }
 
 /// Composite `src` over `buf` with a blend mode, scalar opacity and optional
