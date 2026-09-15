@@ -2,6 +2,7 @@
 // the selection (or the canvas) until release sends `paint.gradient`.
 
 import type { EditorStore } from "../lib/editor.svelte";
+import { paintTarget } from "../ui/paint-target.svelte";
 import { t } from "../lib/i18n";
 import type { Tool } from "./types";
 import { gradientStops, toolSettings } from "./settings.svelte";
@@ -66,7 +67,7 @@ export const gradient: Tool = {
       ed,
       {
         op: "paint.gradient",
-        target: "pixels",
+        target: paintTarget.layerId == null || paintTarget.layerId === ed.summary?.active ? paintTarget.value : "pixels",
         from: d.from,
         to,
         gradient: toolSettings.gradientType,

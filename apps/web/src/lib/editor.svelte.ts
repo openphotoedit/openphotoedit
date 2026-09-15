@@ -52,7 +52,7 @@ export const ZOOM_STEPS = [0.01, 0.02, 0.03, 0.05, 0.0833, 0.125, 0.1667, 0.25, 
 export class EditorStore {
   engine = new EngineClient();
   ready = $state(false);
-  summary = $state<Summary | null>(null);
+  summary = $state.raw<Summary | null>(null);
   /** True once a real document is open (not the 1×1 placeholder). */
   hasDocument = $state(false);
   profile = $state<Profile | null>(loadProfile());

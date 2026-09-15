@@ -4,6 +4,7 @@
 // stroke_id, then `paint.stroke-end`.
 
 import type { EditorStore } from "../lib/editor.svelte";
+import { paintTarget } from "../ui/paint-target.svelte";
 import { t } from "../lib/i18n";
 import type { Tool, ToolPointer } from "./types";
 import { setSizeFor, sizeFor, toolSettings } from "./settings.svelte";
@@ -116,7 +117,7 @@ function makePaintTool(spec: PaintSpec): Tool {
       try {
         await exec(ed, {
           op: "paint.stroke",
-          target: "pixels",
+          target: paintTarget.layerId == null || paintTarget.layerId === ed.summary?.active ? paintTarget.value : "pixels",
           tool: spec.engine,
           brush: brushFor(ed, spec.id),
           points,

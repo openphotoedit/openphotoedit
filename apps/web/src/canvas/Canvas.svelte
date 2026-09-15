@@ -72,10 +72,20 @@
     // Checkerboard behind the document's area only.
     const left = (0 - g.x0) * g.scale;
     const top = (0 - g.y0) * g.scale;
+    // Clip to whole device pixels of the document so a partly covered edge
+    // column never shows the checkerboard through as a light line.
+    const clipL = Math.max(0, Math.ceil(left - 1e-6));
+    const clipT = Math.max(0, Math.ceil(top - 1e-6));
+    const clipR = Math.min(base.width, Math.floor(left + s.width * g.scale + 1e-6));
+    const clipB = Math.min(base.height, Math.floor(top + s.height * g.scale + 1e-6));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(clipL, clipT, Math.max(0, clipR - clipL), Math.max(0, clipB - clipT));
+    ctx.clip();
     ctx.save();
     ctx.fillStyle = checker(ctx);
     ctx.translate(Math.round(left), Math.round(top));
-    ctx.fillRect(0, 0, Math.round(s.width * g.scale), Math.round(s.height * g.scale));
+    ctx.fillRect(-1, -1, Math.round(s.width * g.scale) + 2, Math.round(s.height * g.scale) + 2);
     ctx.restore();
     if (frame) {
       const k = g.scale / frame.scale;
@@ -84,6 +94,7 @@
       ctx.imageSmoothingEnabled = k < 1;
       ctx.drawImage(frame.bitmap, dx, dy, frame.bitmap.width * k, frame.bitmap.height * k);
     }
+    ctx.restore();
   }
 
   let pendingQuality = 1;
@@ -295,7 +306,7 @@
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (isTyping(e.target)) return;
+    if (isTyping(e.target) || e.defaultPrevented) return;
     if (e.code === "Space" && !spaceHeld) {
       spaceHeld = true;
       e.preventDefault();

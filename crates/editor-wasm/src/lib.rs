@@ -212,6 +212,27 @@ impl Engine {
         Ok(m.raster.plane.read_vec(r))
     }
 
+    /// A layer mask fitted into `size`×`size` over the document's aspect
+    /// ratio, single channel, prefixed like `thumbnail` with
+    /// `[w_lo, w_hi, h_lo, h_hi]`.
+    pub fn mask_thumbnail(&self, id: LayerId, size: u32) -> Result<Vec<u8>, JsError> {
+        let doc = &self.ed.doc;
+        let layer = doc.find(id).ok_or_else(|| err(format!("no layer {id}")))?;
+        let m = layer.mask.as_ref().ok_or_else(|| err("layer has no mask"))?;
+        let s = (size as f64 / doc.width.max(doc.height) as f64).min(1.0);
+        let w = ((doc.width as f64 * s).round() as usize).max(1);
+        let h = ((doc.height as f64 * s).round() as usize).max(1);
+        let mut f = vec![0f32; w * h];
+        m.raster.plane.resample(-m.raster.x as f64, -m.raster.y as f64, 1.0 / s, w, h, &mut f);
+        let mut out = vec![0u8; 4 + w * h];
+        out[0..2].copy_from_slice(&(w as u16).to_le_bytes());
+        out[2..4].copy_from_slice(&(h as u16).to_le_bytes());
+        for (o, v) in out[4..].iter_mut().zip(f.iter()) {
+            *o = (v * 255.0 + 0.5) as u8;
+        }
+        Ok(out)
+    }
+
     /// Selection coverage (single channel) resampled like `render`, for the
     /// marching-ants overlay. Empty when nothing is selected.
     pub fn selection_view(&self, x: f64, y: f64, scale: f64, width: u32, height: u32) -> Vec<u8> {
