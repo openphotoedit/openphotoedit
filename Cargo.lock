@@ -695,6 +695,8 @@ name = "editor-paint"
 version = "0.1.0"
 dependencies = [
  "editor-core",
+ "editor-select",
+ "image",
  "serde",
  "serde_json",
 ]
@@ -714,6 +716,7 @@ version = "0.1.0"
 dependencies = [
  "editor-core",
  "miniz_oxide 0.8.9",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "thiserror",
