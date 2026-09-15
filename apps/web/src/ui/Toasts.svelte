@@ -28,6 +28,12 @@
     pointer-events: none;
     max-width: min(560px, calc(100vw - 32px));
   }
+  /* Phones: clear Lite's bottom tab bar and sheet handle. */
+  @media (max-width: 760px) {
+    .toasts {
+      bottom: calc(88px + env(safe-area-inset-bottom));
+    }
+  }
   .toast {
     pointer-events: auto;
     display: flex;

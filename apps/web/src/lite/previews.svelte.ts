@@ -1,10 +1,9 @@
-// Real previews, rendered by the engine: each variant is applied silently,
-// thumbnailed, and taken back out of history before the next. Results are
-// cached against the parts of the document the variant does not replace.
+// Real previews, rendered by the engine on a clone of the document (see
+// `Engine::preview_thumbnail`). Results are cached against the parts of the
+// document the variant does not replace.
 
 import { editor } from "../lib/editor.svelte";
 import type { LayerInfo } from "../engine/types";
-import { lite } from "./lite.svelte";
 
 export interface Variant {
   key: string;
@@ -68,23 +67,22 @@ export class PreviewSet {
     const run = ++this.run;
     this.loading = true;
     try {
-      const done = await lite.preview(async () => {
-        for (const v of todo) {
-          if (run !== this.run) return true;
-          let bytes: Uint8Array;
-          try {
-            bytes = await lite.silently(v.commands(), () => editor.engine.call<Uint8Array>("thumbnail", null, this.size));
-          } catch (e) {
-            console.warn("preview failed", v.key, e);
-            continue;
-          }
-          const thumb = await thumbToUrl(bytes);
-          if (run === this.run && this.signature === signature) this.thumbs = { ...this.thumbs, [v.key]: thumb };
-          else URL.revokeObjectURL(thumb.url);
+      // The engine renders each variant on a throwaway clone of the
+      // document, so previews never touch history or pending redo steps.
+      for (const v of todo) {
+        if (run !== this.run) break;
+        let bytes: Uint8Array;
+        try {
+          bytes = await editor.engine.call<Uint8Array>("preview_thumbnail", JSON.stringify(v.commands()), this.size);
+        } catch (e) {
+          console.warn("preview failed", v.key, e);
+          continue;
         }
-        return true;
-      });
-      this.blocked = done === null;
+        const thumb = await thumbToUrl(bytes);
+        if (run === this.run && this.signature === signature) this.thumbs = { ...this.thumbs, [v.key]: thumb };
+        else URL.revokeObjectURL(thumb.url);
+      }
+      this.blocked = false;
     } finally {
       if (run === this.run) this.loading = false;
     }

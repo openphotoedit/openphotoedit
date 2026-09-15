@@ -16,6 +16,7 @@ mod ai;
 mod encode;
 mod project;
 mod psd;
+mod raw;
 
 /// Every domain crate, registered once per engine.
 fn register_domains(ed: &mut Editor) {
@@ -202,6 +203,31 @@ impl Engine {
         out[2..4].copy_from_slice(&(h as u16).to_le_bytes());
         to_u8(&f, &mut out[4..]);
         out
+    }
+
+    /// Render a thumbnail of the document as it would look after `cmds` (a
+    /// JSON array of commands), without touching the document or history.
+    /// The trial runs on a clone that shares every tile, so it is cheap.
+    /// Returns the `thumbnail` format, or an error naming the failing command.
+    pub fn preview_thumbnail(&self, cmds: &str, size: u32) -> Result<Vec<u8>, JsError> {
+        let list: Vec<serde_json::Value> = serde_json::from_str(cmds).map_err(err)?;
+        let mut trial = Editor::new(1, 1);
+        register_domains(&mut trial);
+        trial.doc = self.ed.doc.clone();
+        trial.history.max_steps = 0;
+        for c in list {
+            trial.exec(c, &[]).map_err(err)?;
+        }
+        let doc = &trial.doc;
+        let s = (size as f64 / doc.width.max(doc.height) as f64).min(1.0);
+        let w = ((doc.width as f64 * s).round() as usize).max(1);
+        let h = ((doc.height as f64 * s).round() as usize).max(1);
+        let f = render_view(doc, View { x: 0.0, y: 0.0, scale: s, width: w, height: h });
+        let mut out = vec![0u8; 4 + f.len()];
+        out[0..2].copy_from_slice(&(w as u16).to_le_bytes());
+        out[2..4].copy_from_slice(&(h as u16).to_le_bytes());
+        to_u8(&f, &mut out[4..]);
+        Ok(out)
     }
 
     /// Layer mask pixels (single channel) over a document rectangle.

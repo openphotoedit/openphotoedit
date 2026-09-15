@@ -254,12 +254,21 @@ export class EditorStore {
   // ---------------------------------------------------------------------
   // Viewport
 
-  fit() {
+  /** Space the shell keeps clear over the canvas edges (a prompt bar, a sheet). */
+  fitInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+  fit(insets: Partial<{ top: number; right: number; bottom: number; left: number }> = {}) {
     const s = this.summary;
     if (!s) return;
+    const i = { ...this.fitInsets, ...insets };
     const pad = 32;
-    const z = Math.min((this.viewport.width - pad * 2) / s.width, (this.viewport.height - pad * 2) / s.height);
-    this.view = { cx: s.width / 2, cy: s.height / 2, zoom: Math.max(0.01, Math.min(z, 16)) };
+    const aw = this.viewport.width - pad * 2 - i.left - i.right;
+    const ah = this.viewport.height - pad * 2 - i.top - i.bottom;
+    const z = Math.max(0.01, Math.min(Math.min(aw / s.width, ah / s.height), 16));
+    // Centre the image in the free area, not the whole viewport.
+    const offX = (i.left - i.right) / 2 / z;
+    const offY = (i.top - i.bottom) / 2 / z;
+    this.view = { cx: s.width / 2 - offX, cy: s.height / 2 - offY, zoom: z };
   }
 
   actualPixels() {

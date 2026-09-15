@@ -45,6 +45,6 @@
     color: var(--text-muted);
   }
   .dot {
-    color: var(--brand);
+    color: var(--accent);
   }
 </style>

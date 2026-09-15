@@ -4,7 +4,10 @@
 
 :root {
   /* The accent is only ever a 16% tint chip or a 7px dot (design system). */
-  --brand: var(--accent-24);
+  /* The product accent (iris). --brand stays the suite's action green,
+     which primary buttons use. */
+  --accent: var(--accent-24);
+  --logo-dot: var(--accent-24);
   --ops-pasteboard: var(--bg-sunken);
   --ops-panel: var(--surface-card);
   --ops-toolbar-w: 48px;

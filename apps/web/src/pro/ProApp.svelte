@@ -151,7 +151,7 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--brand);
+    background: var(--accent);
   }
   .simple {
     align-self: center;

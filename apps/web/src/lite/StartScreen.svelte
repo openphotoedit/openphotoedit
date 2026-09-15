@@ -141,7 +141,7 @@
     width: 64px;
     height: 64px;
     border-radius: var(--radius-xl);
-    background: color-mix(in oklab, var(--brand) 16%, transparent);
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
     color: var(--text-strong);
     margin-bottom: var(--space-2);
   }

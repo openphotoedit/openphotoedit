@@ -75,7 +75,7 @@
     width: 32px;
     height: 32px;
     border-radius: var(--radius-md);
-    background: color-mix(in oklab, var(--brand) 16%, transparent);
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
     color: var(--text-strong);
   }
   .title {
