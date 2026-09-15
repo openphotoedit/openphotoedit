@@ -38,6 +38,15 @@ function loadProfile(): Profile | null {
   }
 }
 
+/** An open document as the tab bar shows it. */
+export interface DocTab {
+  id: number;
+  name: string;
+  dirty: boolean;
+  hasDocument: boolean;
+  view: ViewState;
+}
+
 export const ZOOM_STEPS = [0.01, 0.02, 0.03, 0.05, 0.0833, 0.125, 0.1667, 0.25, 0.3333, 0.5, 0.6667, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 32];
 
 export class EditorStore {
@@ -62,6 +71,9 @@ export class EditorStore {
   /** Unsaved changes since the last export/save. */
   dirty = $state(false);
   fileName = $state("Untitled");
+  /** Every open document; the current one's live state is on this store. */
+  tabs = $state<DocTab[]>([{ id: 1, name: "Untitled", dirty: false, hasDocument: false, view: { cx: 0, cy: 0, zoom: 1 } }]);
+  currentTab = $state(1);
   private toastId = 1;
 
   constructor() {
@@ -161,6 +173,69 @@ export class EditorStore {
 
   dismiss(id: number) {
     this.toasts = this.toasts.filter((t) => t.id !== id);
+  }
+
+  // ---------------------------------------------------------------------
+  // Documents
+
+  private saveTabState() {
+    this.tabs = this.tabs.map((t) =>
+      t.id === this.currentTab ? { ...t, name: this.fileName, dirty: this.dirty, hasDocument: this.hasDocument, view: { ...this.view } } : t,
+    );
+  }
+
+  private async refreshSummary() {
+    this.summary = JSON.parse(await this.engine.call<string>("summary"));
+  }
+
+  /** Start a new, empty document tab and make it current. */
+  async newTab(): Promise<number> {
+    this.saveTabState();
+    const id = await this.engine.call<number>("new_document");
+    this.tabs = [...this.tabs, { id, name: "Untitled", dirty: false, hasDocument: false, view: { cx: 0, cy: 0, zoom: 1 } }];
+    this.currentTab = id;
+    this.fileName = "Untitled";
+    this.dirty = false;
+    this.hasDocument = false;
+    await this.refreshSummary();
+    return id;
+  }
+
+  async switchTab(id: number) {
+    if (id === this.currentTab) return;
+    this.saveTabState();
+    await this.engine.call("switch_document", id);
+    const t = this.tabs.find((x) => x.id === id);
+    this.currentTab = id;
+    if (t) {
+      this.fileName = t.name;
+      this.dirty = t.dirty;
+      this.hasDocument = t.hasDocument;
+      this.view = { ...t.view };
+    }
+    await this.refreshOthers();
+  }
+
+  private async refreshOthers() {
+    await this.refreshSummary();
+    this.renderTick++;
+  }
+
+  async closeTab(id: number) {
+    this.saveTabState();
+    const next = await this.engine.call<number>("close_document", id);
+    let tabs = this.tabs.filter((t) => t.id !== id);
+    if (!tabs.some((t) => t.id === next)) {
+      tabs = [...tabs, { id: next, name: "Untitled", dirty: false, hasDocument: false, view: { cx: 0, cy: 0, zoom: 1 } }];
+    }
+    this.tabs = tabs;
+    const t = tabs.find((x) => x.id === next)!;
+    this.currentTab = next;
+    this.fileName = t.name;
+    this.dirty = t.dirty;
+    this.hasDocument = t.hasDocument;
+    this.view = { ...t.view };
+    await this.refreshOthers();
   }
 
   // ---------------------------------------------------------------------

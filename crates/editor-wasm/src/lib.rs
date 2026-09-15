@@ -32,7 +32,12 @@ pub fn start() {
 
 #[wasm_bindgen]
 pub struct Engine {
+    /// The document every call acts on. Other open documents wait in
+    /// `parked` and are swapped in by `switch_document`.
     pub(crate) ed: Editor,
+    pub(crate) doc_id: u32,
+    parked: Vec<(u32, Editor)>,
+    next_doc: u32,
 }
 
 impl Default for Engine {
@@ -51,7 +56,71 @@ impl Engine {
     pub fn new() -> Engine {
         let mut ed = Editor::new(1, 1);
         register_domains(&mut ed);
-        Engine { ed }
+        Engine { ed, doc_id: 1, parked: Vec::new(), next_doc: 2 }
+    }
+
+    /// Open a fresh, empty document alongside the others and make it
+    /// current. Returns its id; the caller fills it with `doc.new` or
+    /// `doc.open-pixels`.
+    pub fn new_document(&mut self) -> u32 {
+        let mut ed = Editor::new(1, 1);
+        register_domains(&mut ed);
+        let id = self.next_doc;
+        self.next_doc += 1;
+        let old = std::mem::replace(&mut self.ed, ed);
+        self.parked.push((self.doc_id, old));
+        self.doc_id = id;
+        id
+    }
+
+    /// Make another open document current.
+    pub fn switch_document(&mut self, id: u32) -> Result<(), JsError> {
+        if id == self.doc_id {
+            return Ok(());
+        }
+        let pos = self.parked.iter().position(|(d, _)| *d == id).ok_or_else(|| err(format!("no open document {id}")))?;
+        let (_, ed) = self.parked.remove(pos);
+        let old = std::mem::replace(&mut self.ed, ed);
+        self.parked.push((self.doc_id, old));
+        self.doc_id = id;
+        Ok(())
+    }
+
+    /// Close a document. Closing the current one switches to the most
+    /// recently used other document (or a blank one). Returns the new
+    /// current id.
+    pub fn close_document(&mut self, id: u32) -> Result<u32, JsError> {
+        if id != self.doc_id {
+            let pos = self.parked.iter().position(|(d, _)| *d == id).ok_or_else(|| err(format!("no open document {id}")))?;
+            self.parked.remove(pos);
+            return Ok(self.doc_id);
+        }
+        match self.parked.pop() {
+            Some((next, ed)) => {
+                self.ed = ed;
+                self.doc_id = next;
+            }
+            None => {
+                let mut ed = Editor::new(1, 1);
+                register_domains(&mut ed);
+                self.ed = ed;
+            }
+        }
+        Ok(self.doc_id)
+    }
+
+    pub fn current_document(&self) -> u32 {
+        self.doc_id
+    }
+
+    /// `[{id, width, height, name, current}]` for every open document.
+    pub fn documents(&self) -> String {
+        let row = |id: u32, ed: &Editor, current: bool| {
+            serde_json::json!({ "id": id, "width": ed.doc.width, "height": ed.doc.height, "name": ed.doc.meta.source_name, "current": current })
+        };
+        let mut rows = vec![row(self.doc_id, &self.ed, true)];
+        rows.extend(self.parked.iter().map(|(id, ed)| row(*id, ed, false)));
+        serde_json::Value::Array(rows).to_string()
     }
 
     /// Run a command. Returns the result JSON.
