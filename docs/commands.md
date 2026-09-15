@@ -73,15 +73,15 @@ Adjustment kinds (`adjustment.kind`): `brightness-contrast, levels, curves, expo
 | `select.mask` | `x, y, width, height, mode?, feather?, label?` + single-channel bytes | ✓ |
 | `select.layer-alpha` | `id, mode?` | ✓ |
 | `select.feather` | `radius` | ✓ |
-| `select.magic-wand` | `x, y, tolerance (0..255), contiguous = true, sample_all = false, anti_alias = true, mode?` | ◻ select |
-| `select.color-range` | `color?: Rgba8, preset?: highlights\|midtones\|shadows\|skin, fuzziness (0..200), mode?` | ◻ select |
-| `select.similar` | `tolerance` | ◻ select |
-| `select.grow` / `select.shrink` | `by` (px) | ◻ select |
-| `select.border` | `width` | ◻ select |
-| `select.smooth` | `radius` | ◻ select |
-| `select.quick` | `points: Point[], radius, mode: add\|subtract` (edge-aware brush; incremental, merge key per `stroke_id?`) | ◻ select |
-| `select.refine` | `radius, smooth, feather, contrast, shift_edge (-100..100), decontaminate?` (edge-aware against the merged image) | ◻ select |
-| `select.transform` | `matrix: {a,b,c,d,e,f}` | ◻ select |
+| `select.magic-wand` | `x, y, tolerance (0..255), contiguous = true, sample_all = false, anti_alias = true, mode?` | ✓ |
+| `select.color-range` | `color?: Rgba8, preset?: highlights\|midtones\|shadows\|skin, fuzziness (0..200), mode?` | ✓ |
+| `select.similar` | `tolerance` | ✓ |
+| `select.grow` / `select.shrink` | `by` (px) | ✓ |
+| `select.border` | `width` | ✓ |
+| `select.smooth` | `radius` | ✓ |
+| `select.quick` | `points: Point[], radius, mode: add\|subtract` (edge-aware brush; incremental, merge key per `stroke_id?`) | ✓ |
+| `select.refine` | `radius, smooth, feather, contrast, shift_edge (-100..100), decontaminate?` (edge-aware against the merged image) | ✓ |
+| `select.transform` | `matrix: {a,b,c,d,e,f}` | ✓ |
 
 ## Filters (◻ filters)
 
@@ -132,7 +132,7 @@ Analysis (not recorded, `changed: false`):
 | `analyze.facts` | → `{ exposure, clipping_low, clipping_high, cast: {temperature, tint}, noise_sigma, sharpness, tilt_degrees }` (planner input) |
 | `analyze.pick` | `x, y, size: 1\|3\|5, merged?: true` → `{ color: Rgba8 }` |
 
-## Paint (◻ paint)
+## Paint (✓ paint)
 
 `brush`: `{ size, hardness (0..1), opacity (0..1), flow (0..1), spacing (fraction of size, default 0.1), color: Rgba8, blend?: BlendMode, pressure_size?: bool, pressure_opacity?: bool, angle?, roundness? }`. `points`: `[{x, y, p?}]` (p = pressure 0..1).
 

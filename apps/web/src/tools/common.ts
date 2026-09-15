@@ -622,27 +622,49 @@ export function activeLayer(ed: EditorStore) {
  * Coalesce pointer samples and flush them once per animation frame, in
  * order, never overlapping (the next flush waits for the previous command).
  */
+/**
+ * Collects pointer samples and sends them at most once per frame, and never
+ * while the previous batch is still in the engine: samples arriving during a
+ * slow command (quick select can take a few hundred milliseconds) are merged
+ * into the next single batch instead of queueing a backlog of commands.
+ */
 export class FrameBatcher<T> {
   private queue: T[] = [];
   private raf = 0;
-  private chain: Promise<void> = Promise.resolve();
+  private busy = false;
+  private idle: Promise<void> = Promise.resolve();
+  private release: (() => void) | null = null;
   constructor(private flush: (items: T[]) => Promise<void> | void) {}
   push(item: T) {
     this.queue.push(item);
-    if (!this.raf) this.raf = requestAnimationFrame(() => this.drain());
+    if (!this.raf && !this.busy) this.raf = requestAnimationFrame(() => this.drain());
   }
   private drain() {
     this.raf = 0;
-    if (!this.queue.length) return;
+    if (this.busy || !this.queue.length) return;
     const items = this.queue;
     this.queue = [];
-    this.chain = this.chain.then(() => this.flush(items)).catch((e) => console.error(e));
+    this.busy = true;
+    if (!this.release) this.idle = new Promise((r) => (this.release = r));
+    Promise.resolve()
+      .then(() => this.flush(items))
+      .catch((e) => console.error(e))
+      .finally(() => {
+        this.busy = false;
+        if (this.queue.length) {
+          this.drain();
+        } else {
+          this.release?.();
+          this.release = null;
+        }
+      });
   }
   /** Flush whatever is queued now and wait for every pending flush. */
   async done() {
     if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
     this.drain();
-    await this.chain;
+    await this.idle;
   }
   clear() {
     if (this.raf) cancelAnimationFrame(this.raf);
