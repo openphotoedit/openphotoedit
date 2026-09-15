@@ -38,6 +38,7 @@ Status: **✓ implemented** · **◻ contract** (a backend workstream implements
 | `layer.merge-down` | `id` | |
 | `layer.merge-visible` / `layer.flatten` / `layer.stamp-visible` | — | |
 | `layer.rasterize` | `id` | |
+| `layer.set-effects` | `id, effects: LayerEffects \| null` (layer style; see `crates/editor-core/src/effects.rs` for fields: `drop_shadow, inner_shadow, outer_glow, inner_glow, bevel, satin, color_overlay, gradient_overlay, stroke`, each optional with `enabled`; merges per layer) | |
 | `layer.add-mask` | `id?, from: reveal-all\|hide-all\|selection\|hide-selection` | |
 | `layer.delete-mask` | `id, apply?` | |
 | `layer.mask-props` | `id, enabled?, linked?, density?` | |
@@ -143,7 +144,7 @@ Analysis (not recorded, `changed: false`):
 | `paint.magic-erase` | `id?, x, y, tolerance, contiguous = true` |
 | `paint.gradient` | `id?, target: pixels\|mask, from, to, gradient: linear\|radial\|angle\|reflected\|diamond, stops, opacity?, blend?, reverse?` |
 
-## Transform (◻ transform)
+## Transform (✓ transform)
 
 | op | params |
 |---|---|
@@ -154,6 +155,9 @@ Analysis (not recorded, `changed: false`):
 | `transform.perspective-crop` | `quad: [Point;4], width, height` (whole document) |
 | `transform.lens-correct` | `id?, distortion (-100..100), chromatic_rc (-100..100), chromatic_by, vignette (-100..100), vignette_midpoint, scale (%)` |
 | `transform.content-aware-scale` | `width, height, protect_skin?` (whole document) |
+| `transform.liquify-end` | `stroke_id` (not recorded; frees liquify state) |
+
+Optional `resample` on layer/selection-pixels/warp/perspective-crop; `auto_scale` on lens-correct. Smart objects: `transform.layer` maps their quad (lossless); warp and content-aware scale rasterize them.
 
 ## PSD and project (◻ psd, wasm methods rather than commands)
 
