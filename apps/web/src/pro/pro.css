@@ -1,0 +1,75 @@
+/* Pro-only global rules. The product accent is only a tint chip or a dot,
+   so a primary button in the Pro workspace is the neutral high-contrast
+   button rather than an accent-filled one. */
+:root.oa-dark .oa-btn--primary {
+  background: var(--surface-inverse);
+  color: var(--text-inverse);
+}
+:root.oa-dark .oa-btn--primary:hover:not(:disabled) {
+  background: var(--text-body);
+}
+:root.oa-dark .oa-btn--primary:active:not(:disabled) {
+  background: var(--text-muted);
+}
+:root.oa-dark .oa-btn--secondary {
+  background: var(--surface-raised);
+  box-shadow: none;
+}
+:root.oa-dark .oa-btn--secondary:hover:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.ops-pro ::-webkit-scrollbar,
+.ops-menu::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ops-pro ::-webkit-scrollbar-thumb,
+.ops-menu::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.ops-pro ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Rows of labelled controls in panels and dialogs. */
+.ops-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+}
+.ops-row > .grow {
+  flex: 1;
+  min-width: 0;
+}
+.ops-grid2 {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px var(--space-3);
+}
+.ops-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.ops-hr {
+  height: 1px;
+  background: var(--border-hairline);
+  border: 0;
+  margin: 2px 0;
+}
+.ops-note {
+  font: var(--type-caption);
+  color: var(--text-faint);
+  margin: 0;
+}
+.ops-error {
+  font: var(--type-caption);
+  color: var(--danger-fg);
+  margin: 0;
+}

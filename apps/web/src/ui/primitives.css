@@ -1,0 +1,76 @@
+/* Global rules for the shared primitives in src/ui: things a scoped
+   component style cannot reach (the body-level tooltip, popup menus). Every
+   value is a token. */
+
+.ops-tooltip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  max-width: 320px;
+}
+.ops-tooltip__key {
+  font: var(--type-caption);
+  font-family: var(--font-mono);
+  opacity: 0.6;
+}
+
+/* Dense controls for professional panels. 24px sits between the design
+   system's 28px small control and a text line, as editor chrome needs. */
+.oa-dense {
+  --ops-control-h: 24px;
+}
+
+.ops-field {
+  height: var(--ops-control-h, var(--control-h-sm));
+  padding: 0 6px;
+  background: var(--bg-sunken);
+  border: var(--border-width) solid var(--border-hairline);
+  border-radius: var(--radius-xs);
+  font: var(--weight-regular) var(--text-xs) / 1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+  min-width: 0;
+  transition: var(--transition-control);
+}
+.ops-field:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.ops-field:focus-visible,
+.ops-field:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: none;
+}
+.ops-field:disabled {
+  color: var(--text-faint);
+}
+
+.ops-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--type-caption);
+  color: var(--text-body);
+  cursor: pointer;
+  user-select: none;
+}
+.ops-check input {
+  accent-color: var(--text-strong);
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+.ops-label {
+  font: var(--type-caption);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ops-section-title {
+  font: var(--weight-medium) var(--text-2xs) / 1.2 var(--font-sans);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
