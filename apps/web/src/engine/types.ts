@@ -127,7 +127,24 @@ export interface ShapeData {
   rotation: number;
 }
 
-export type LayerKindName = "pixel" | "adjustment" | "fill" | "group" | "text" | "shape";
+export type LayerKindName = "pixel" | "adjustment" | "fill" | "group" | "text" | "shape" | "smart";
+
+export interface SmartFilterInfo {
+  filter: Record<string, unknown> & { op: string };
+  enabled: boolean;
+  opacity: number;
+  blend: BlendMode;
+}
+
+export interface SmartInfo {
+  source: "pixels" | "document";
+  width: number;
+  height: number;
+  /** TL, TR, BR, BL in document pixels. */
+  quad: [Point, Point, Point, Point];
+  filters: SmartFilterInfo[];
+  layers: number;
+}
 
 export interface LayerInfo {
   id: LayerId;
@@ -151,6 +168,8 @@ export interface LayerInfo {
   children?: LayerInfo[];
   text?: TextData;
   shape?: ShapeData;
+  smart?: SmartInfo;
+  effects?: Record<string, unknown> | null;
 }
 
 export interface Summary {
@@ -168,6 +187,7 @@ export interface Summary {
 
 export interface ExecResult {
   changed: boolean;
+  warnings?: string[];
   label?: string | null;
   dirty?: Rect | null;
   data?: Record<string, unknown> | null;

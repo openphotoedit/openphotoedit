@@ -98,9 +98,8 @@ function closeEditor(ed: EditorStore) {
 async function unhide(ed: EditorStore, s: TextEditSession) {
   if (!s.hidden || s.layerId == null) return;
   s.hidden = false;
-  const undo = ed.summary?.history.undo ?? [];
-  if (undo[undo.length - 1] === "Hide Layer") await run(ed, { op: "edit.undo" }, { quiet: true });
-  else await run(ed, { op: "layer.props", id: s.layerId, visible: true }, { quiet: true });
+  const id = s.layerId;
+  await ed.setPreviewHidden(ed.previewHidden.filter((x) => x !== id));
 }
 
 /** Commit the text being edited (no-op when nothing is open). */
@@ -138,8 +137,11 @@ async function editLayer(ed: EditorStore, l: LayerInfo) {
   loadOptions(d);
   const session: TextEditSession = { layerId: l.id, text: d.text, x: d.x, y: d.y, boxWidth: d.box_width, rotation: d.rotation, hidden: false };
   await setActive(ed, l.id);
-  const r = await run(ed, { op: "layer.props", id: l.id, visible: false }, { quiet: true });
-  session.hidden = !!r?.changed;
+  // Hidden from the viewport only, so editing text leaves no history step.
+  if (l.visible) {
+    await ed.setPreviewHidden([...ed.previewHidden, l.id]);
+    session.hidden = true;
+  }
   openEditor(ed, session);
 }
 

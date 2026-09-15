@@ -2,7 +2,7 @@
 // not have landed yet, overlay drawing in viewport pixels, hit-testing,
 // and the small geometry every tool needs.
 
-import type { EditorStore } from "../lib/editor.svelte";
+import { editor, type EditorStore } from "../lib/editor.svelte";
 import { allLayers, type ExecResult, type LayerInfo, type Point, type Rect, type Rgba8 } from "../engine/types";
 import { t } from "../lib/i18n";
 import type { ToolPointer } from "./types";
@@ -144,7 +144,7 @@ export function redraw(ed: EditorStore) {
 // through its stable class names).
 
 export function canvasHost(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('[data-testid="canvas"]');
+  return editor.canvasHost ?? document.querySelector<HTMLElement>('[data-testid="canvas"]');
 }
 
 export function overlayCanvas(): HTMLCanvasElement | null {
@@ -152,9 +152,8 @@ export function overlayCanvas(): HTMLCanvasElement | null {
 }
 
 /** Change the pointer cursor while a tool is active (e.g. over a handle). */
-export function setCursor(cursor: string) {
-  const el = overlayCanvas();
-  if (el && el.style.cursor !== cursor) el.style.cursor = cursor;
+export function setCursor(cursor: string | null) {
+  if (editor.cursor !== cursor) editor.cursor = cursor;
 }
 
 /** Where the pointer hovers, for brush outlines; null once it leaves the canvas. */

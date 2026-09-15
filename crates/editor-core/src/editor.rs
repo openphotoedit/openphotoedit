@@ -16,6 +16,9 @@ pub struct Editor {
     /// Increments on every change, so the UI can tell whether its cached
     /// summary is current.
     pub revision: u64,
+    /// Layers left out of viewport renders while a tool edits them in an
+    /// overlay (text being typed, a layer mid-transform). Not document state.
+    pub preview_hidden: Vec<crate::layer::LayerId>,
 }
 
 impl Default for Editor {
@@ -26,7 +29,7 @@ impl Default for Editor {
 
 impl Editor {
     pub fn new(width: u32, height: u32) -> Editor {
-        Editor { doc: Document::new(width, height), domains: Vec::new(), history: Default::default(), renderer: Renderer::new(), revision: 0 }
+        Editor { doc: Document::new(width, height), domains: Vec::new(), history: Default::default(), renderer: Renderer::new(), revision: 0, preview_hidden: Vec::new() }
     }
 
     /// Route `prefix.*` operations to `handler`. Several handlers may share a
@@ -147,7 +150,19 @@ impl Editor {
 
     /// Render a view into straight RGBA8.
     pub fn render(&mut self, view: View, out: &mut [u8]) {
-        self.renderer.render(&self.doc, view, out);
+        if self.preview_hidden.is_empty() {
+            self.renderer.render(&self.doc, view, out);
+        } else {
+            // A clone shares every tile; hiding bumps revisions, so the
+            // render cache does not mistake this for the real document.
+            let mut doc = self.doc.clone();
+            for id in &self.preview_hidden {
+                if let Some(l) = doc.find_mut(*id) {
+                    l.visible = false;
+                }
+            }
+            self.renderer.render(&doc, view, out);
+        }
     }
 
     pub fn summary(&self) -> Value {

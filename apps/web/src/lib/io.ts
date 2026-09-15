@@ -121,7 +121,7 @@ export async function exportBlob(opts: ExportOptions): Promise<Blob> {
   const toCanvas = () => {
     const c = new OffscreenCanvas(w, h);
     const g = c.getContext("2d")!;
-    g.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
+    g.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
     return c;
   };
   if (opts.width && opts.width !== w) {

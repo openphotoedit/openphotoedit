@@ -31,7 +31,7 @@
   let antsWritten: number[] = [];
 
   const activeToolId = $derived(spaceHeld ? "hand" : (toolOverride ?? editor.tool));
-  const cursor = $derived(TOOLS[activeToolId]?.cursor ?? "default");
+  const cursor = $derived(editor.cursor ?? TOOLS[activeToolId]?.cursor ?? "default");
 
   function checker(ctx: CanvasRenderingContext2D) {
     const size = Math.max(4, Math.round(8 * dpr));
@@ -113,7 +113,7 @@
         const rx = g.x0 + g.i0 / g.scale;
         const ry = g.y0 + g.j0 / g.scale;
         const data = await editor.engine.render(rx, ry, g.scale, g.w, g.h);
-        const bitmap = await createImageBitmap(new ImageData(data, g.w, g.h), { premultiplyAlpha: "premultiply" });
+        const bitmap = await createImageBitmap(new ImageData(data as Uint8ClampedArray<ArrayBuffer>, g.w, g.h), { premultiplyAlpha: "premultiply" });
         frame?.bitmap.close();
         frame = { bitmap, x: rx, y: ry, scale: g.scale };
         drawFrame();
@@ -317,6 +317,7 @@
   }
 
   onMount(() => {
+    editor.canvasHost = host;
     const ro = new ResizeObserver(() => {
       dpr = window.devicePixelRatio || 1;
       const r = host.getBoundingClientRect();
@@ -386,6 +387,7 @@
   $effect(() => {
     const id = activeToolId;
     if (prevTool && prevTool !== id) {
+      editor.cursor = null;
       TOOLS[prevTool]?.deactivate?.(editor);
       TOOLS[id]?.activate?.(editor);
     }

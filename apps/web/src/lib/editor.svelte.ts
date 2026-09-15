@@ -71,6 +71,12 @@ export class EditorStore {
   /** Unsaved changes since the last export/save. */
   dirty = $state(false);
   fileName = $state("Untitled");
+  /** A tool's cursor override (over a handle, say); null uses the tool's own. */
+  cursor = $state<string | null>(null);
+  /** The canvas component's host element, for tools that position overlays. */
+  canvasHost: HTMLElement | null = null;
+  /** Layers hidden from the viewport while a tool previews them. */
+  previewHidden = $state<number[]>([]);
   /** Every open document; the current one's live state is on this store. */
   tabs = $state<DocTab[]>([{ id: 1, name: "Untitled", dirty: false, hasDocument: false, view: { cx: 0, cy: 0, zoom: 1 } }]);
   currentTab = $state(1);
@@ -150,6 +156,13 @@ export class EditorStore {
     } finally {
       this.busy = null;
     }
+  }
+
+  /** Hide layers from the viewport only (no undo step, not saved). */
+  async setPreviewHidden(ids: number[]) {
+    this.previewHidden = ids;
+    await this.engine.call("set_preview_hidden", ids);
+    this.renderTick++;
   }
 
   undo() {

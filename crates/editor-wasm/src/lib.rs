@@ -129,6 +129,12 @@ impl Engine {
         Ok(v.to_string())
     }
 
+    /// Leave these layers out of viewport renders (tool previews). Pass an
+    /// empty array to clear. Exports and document state are unaffected.
+    pub fn set_preview_hidden(&mut self, ids: Vec<u32>) {
+        self.ed.preview_hidden = ids;
+    }
+
     /// The layer tree, selection bounds and history as JSON.
     pub fn summary(&self) -> String {
         self.ed.summary().to_string()

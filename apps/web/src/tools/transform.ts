@@ -211,20 +211,17 @@ function ensure(ed: EditorStore): Session | null {
   return session;
 }
 
-/** Hide the original while the preview stands in for it. */
+/** Hide the original while the preview stands in for it (viewport only). */
 async function hideOriginal(ed: EditorStore, s: Session) {
   if (s.hidden || s.mode !== "layer" || !s.layer.visible) return;
   s.hidden = true;
-  const r = await run(ed, { op: "layer.props", id: s.layer.id, visible: false }, { quiet: true });
-  if (!r?.changed) s.hidden = false;
+  await ed.setPreviewHidden([...ed.previewHidden, s.layer.id]);
 }
 
 async function unhide(ed: EditorStore, s: Session) {
   if (!s.hidden) return;
   s.hidden = false;
-  const undo = ed.summary?.history.undo ?? [];
-  if (undo[undo.length - 1] === "Hide Layer") await run(ed, { op: "edit.undo" }, { quiet: true });
-  else await run(ed, { op: "layer.props", id: s.layer.id, visible: true }, { quiet: true });
+  await ed.setPreviewHidden(ed.previewHidden.filter((id) => id !== s.layer.id));
 }
 
 function bilinear(q: Pt[], src: Rect, p: Pt): Pt {
