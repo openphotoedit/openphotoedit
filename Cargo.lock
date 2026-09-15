@@ -706,8 +706,10 @@ name = "editor-project"
 version = "0.1.0"
 dependencies = [
  "editor-core",
+ "miniz_oxide 0.8.9",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -715,6 +717,7 @@ name = "editor-psd"
 version = "0.1.0"
 dependencies = [
  "editor-core",
+ "editor-project",
  "miniz_oxide 0.8.9",
  "png 0.17.16",
  "serde",
@@ -726,6 +729,7 @@ dependencies = [
 name = "editor-raw"
 version = "0.1.0"
 dependencies = [
+ "image",
  "rawler",
  "rayon",
  "serde",
@@ -791,6 +795,7 @@ dependencies = [
  "editor-paint",
  "editor-project",
  "editor-psd",
+ "editor-raw",
  "editor-select",
  "editor-transform",
  "js-sys",

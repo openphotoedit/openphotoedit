@@ -7,4 +7,8 @@ license.workspace = true
 [dependencies]
 editor-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Exact float parsing: a reloaded project must equal the saved one.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+# Pure-Rust deflate for the container and tile data.
+miniz_oxide = "0.8"

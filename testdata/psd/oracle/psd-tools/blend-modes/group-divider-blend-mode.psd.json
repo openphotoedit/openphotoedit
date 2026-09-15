@@ -1,0 +1,1 @@
+{"channels":4,"color_mode":3,"depth":8,"height":100,"layers":[{"bbox":[0,0,0,0],"blend":"pass","children":[],"class":"group","clipping":false,"fill_opacity":255,"kind":"group","layer_id":3,"mask":null,"name":"Folder1","opacity":255,"visible":true}],"merged":{"error":"ValueError: Decompressed length mismatch: got 1606, expected 40000"},"psd_tools":"1.19.0","version":1,"width":100}

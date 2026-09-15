@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PSD harness</title>
+    <style>
+      body { margin: 0; font: 13px system-ui, sans-serif; background: #1e1e1e; color: #ddd; }
+      #row { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+      figure { margin: 0; }
+      canvas { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 16px 16px; max-width: 560px; height: auto; display: block; }
+      pre { white-space: pre-wrap; max-width: 520px; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="row">
+      <figure><canvas id="imported"></canvas><figcaption>Imported, rendered by the engine</figcaption></figure>
+      <figure><canvas id="roundtrip"></canvas><figcaption>Exported to PSD, saved as a project, reopened</figcaption></figure>
+      <pre id="info"></pre>
+    </div>
+    <script type="module">
+      import { editor } from "/src/lib/editor.svelte.ts";
+      import { openers } from "/src/lib/io.ts";
+      import { installPsdIo, exportPsd, saveProject } from "/src/lib/psd-io.ts";
+
+      function draw(id, rgba, w, h) {
+        const c = document.getElementById(id);
+        c.width = w;
+        c.height = h;
+        c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
+      }
+
+      function tree(layers, depth = 0) {
+        return [...layers].reverse().map((l) => `${"  ".repeat(depth)}${l.name} [${l.kind}] ${l.blend}${l.children ? "\n" + tree(l.children, depth + 1) : ""}`).join("\n");
+      }
+
+      window.psdHarness = {
+        async run(name, base64) {
+          await editor.init();
+          installPsdIo();
+          const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+          const ext = name.split(".").pop().toLowerCase();
+          const ok = await openers[ext](new File([bytes], name));
+          if (!ok) throw new Error("open failed: " + JSON.stringify(editor.toasts));
+          const s = editor.summary;
+          draw("imported", await editor.engine.call("flatten"), s.width, s.height);
+          const first = tree(s.layers);
+          const warnings = editor.toasts.map((t) => t.text);
+
+          // PSD out, back in; then project out, back in.
+          const psd = new Uint8Array(await (await exportPsd()).arrayBuffer());
+          if (!(await openers.psd(new File([psd], "again.psd")))) throw new Error("re-import failed");
+          const project = new Uint8Array(await (await saveProject()).arrayBuffer());
+          if (!(await openers.opproj(new File([project], "again.opproj")))) throw new Error("project load failed");
+          const s2 = editor.summary;
+          draw("roundtrip", await editor.engine.call("flatten"), s2.width, s2.height);
+          const second = tree(s2.layers);
+          document.getElementById("info").textContent = `${name} ${s.width}×${s.height}\nPSD ${psd.length} bytes, project ${project.length} bytes\n\n${first}\n\nwarnings:\n${warnings.join("\n") || "none"}`;
+          return { width: s.width, height: s.height, layers: first, sameTree: first === second, psdBytes: psd.length, projectBytes: project.length, warnings };
+        },
+      };
+      window.psdHarnessReady = true;
+    </script>
+  </body>
+</html>

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { editor } from "./lib/editor.svelte";
   import { initLocale } from "./lib/i18n";
+  import { installPsdIo } from "./lib/psd-io";
   import { openFile, placeFile } from "./lib/io";
   import LiteApp from "./lite/LiteApp.svelte";
   import ProApp from "./pro/ProApp.svelte";
@@ -28,6 +29,9 @@
       editor.error(e);
     }
   }
+
+  // Formats the browser cannot decode register their openers once.
+  installPsdIo();
 
   onMount(() => {
     initLocale();

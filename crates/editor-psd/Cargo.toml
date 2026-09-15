@@ -9,3 +9,10 @@ editor-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Pure-Rust zlib for ZIP-compressed channels (already in the tree via png).
+miniz_oxide = "0.8"
+# Embedded PNG contents of smart objects.
+png.workspace = true
+
+[dev-dependencies]
+editor-project.workspace = true
