@@ -1,5 +1,6 @@
 [package]
 name = "editor-filters"
+description = "filter.* and analyze.* commands: blurs, sharpening, noise, distortions, retouching and image analysis."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +9,7 @@ license.workspace = true
 editor-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Real-photo tests decode testdata/photos and write PNGs to look at.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

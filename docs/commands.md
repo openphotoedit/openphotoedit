@@ -83,7 +83,7 @@ Adjustment kinds (`adjustment.kind`): `brightness-contrast, levels, curves, expo
 | `select.refine` | `radius, smooth, feather, contrast, shift_edge (-100..100), decontaminate?` (edge-aware against the merged image) | ✓ |
 | `select.transform` | `matrix: {a,b,c,d,e,f}` | ✓ |
 
-## Filters (◻ filters)
+## Filters (✓ filters)
 
 All take `id?` (active layer), act on the selection (feathered) or the whole layer, and respect locks via `pixels::edit_layer`.
 
@@ -94,7 +94,7 @@ All take `id?` (active layer), act on the selection (feathered) or the whole lay
 | `filter.motion-blur` | `angle (deg), distance` |
 | `filter.radial-blur` | `amount, mode: spin\|zoom, cx?, cy?` |
 | `filter.surface-blur` | `radius, threshold` |
-| `filter.lens-blur` | `radius, depth?` (depth: single-channel bytes, doc-sized; absent = uniform) |
+| `filter.lens-blur` | `radius, focal? = 0` + optional depth map as single-channel `bytes` (doc-sized; absent = uniform) |
 | `filter.tilt-shift` | `center_y, band, feather, radius` |
 | `filter.unsharp-mask` | `amount (%), radius, threshold` |
 | `filter.smart-sharpen` | `amount, radius, reduce_noise` |
@@ -126,7 +126,7 @@ Analysis (not recorded, `changed: false`):
 
 | op | params → data |
 |---|---|
-| `analyze.histogram` | `id?, merged?: true, rect?` → `{ r, g, b, l: number[256] }` |
+| `analyze.histogram` | `id?, merged?: true, rect?: {x,y,w,h}` → `{ r, g, b, l: number[256] }` |
 | `analyze.auto` | `style: auto\|vivid\|natural\|bw` → `{ develop: Develop }` (Lite "Auto" variations) |
 | `analyze.auto-levels` | `mode: tone\|contrast\|color` → `{ levels: Levels }` |
 | `analyze.facts` | → `{ exposure, clipping_low, clipping_high, cast: {temperature, tint}, noise_sigma, sharpness, tilt_degrees }` (planner input) |

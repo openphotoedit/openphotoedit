@@ -727,6 +727,7 @@ name = "editor-raw"
 version = "0.1.0"
 dependencies = [
  "rawler",
+ "rayon",
  "serde",
  "serde_json",
 ]
