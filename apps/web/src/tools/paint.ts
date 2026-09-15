@@ -5,6 +5,7 @@
 
 import type { EditorStore } from "../lib/editor.svelte";
 import { paintTarget } from "../ui/paint-target.svelte";
+import { strokeMask, drawStrokeTint } from "./stroke-mask";
 import { t } from "../lib/i18n";
 import type { Tool, ToolPointer } from "./types";
 import { setSizeFor, sizeFor, toolSettings } from "./settings.svelte";
@@ -146,6 +147,27 @@ function makePaintTool(spec: PaintSpec): Tool {
 
   const sp = (p: ToolPointer): StrokePoint => ({ x: p.x, y: p.y, p: p.pointerType === "pen" ? p.pressure : 1 });
 
+  // Quick Mask: brush, pencil and eraser edit the selection instead of pixels.
+  // Painting white (or erasing) adds to the selection, painting dark removes
+  // from it, as Photoshop's Quick Mask does.
+  const quickMaskCapable = spec.engine === "brush" || spec.engine === "pencil" || spec.engine === "eraser";
+  let qm: Pt[] | null = null;
+  const inQuickMask = () => quickMaskCapable && paintTarget.quickMask;
+  async function commitQuickMask(ed: EditorStore) {
+    const pts = qm;
+    qm = null;
+    const s = ed.summary;
+    if (!pts || !s) return;
+    const size = sizeFor(spec.id);
+    const m = strokeMask(pts, size, s.width, s.height);
+    if (!m) return;
+    const c = ed.primary;
+    const light = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b >= 128;
+    const mode = spec.engine === "eraser" || light ? "add" : "subtract";
+    await exec(ed, { op: "select.mask", x: m.rect.x, y: m.rect.y, width: m.rect.w, height: m.rect.h, mode, label: t("Quick Mask") }, m.bytes);
+    redraw(ed);
+  }
+
   return {
     id: spec.id,
     label: spec.label,
@@ -159,15 +181,26 @@ function makePaintTool(spec: PaintSpec): Tool {
         redraw(ed);
         return;
       }
+      if (inQuickMask()) {
+        qm = [{ x: p.x, y: p.y }];
+        redraw(ed);
+        return;
+      }
       const prev = lastEnd[spec.id];
       if (p.shift && prev) begin(ed, [prev, sp(p)]);
       else begin(ed, [sp(p)]);
     },
     move(ed, p, pressed) {
       trackHover(ed, p);
+      if (pressed && qm) {
+        qm.push({ x: p.x, y: p.y });
+        redraw(ed);
+        return;
+      }
       if (pressed && stroke) stroke.batch.push(sp(p));
     },
     up(ed) {
+      if (qm) return commitQuickMask(ed);
       return end(ed);
     },
     cancel(ed) {
@@ -215,6 +248,7 @@ function makePaintTool(spec: PaintSpec): Tool {
       return false;
     },
     overlay(ed, ctx) {
+      if (qm) drawStrokeTint(ed, ctx, qm, sizeFor(spec.id), "rgba(255, 40, 40, 0.45)");
       if (!hover.inside) return;
       const size = sizeFor(spec.id);
       drawBrushCircle(ctx, hover.vx, hover.vy, (size / 2) * ed.view.zoom, size * ed.view.zoom < 6);
