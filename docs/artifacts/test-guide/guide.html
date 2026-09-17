@@ -1,0 +1,514 @@
+<title>OpenPhotoshop Test Pass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#f5f5f8; --surface:#ffffff; --sunk:#ececf2; --ink:#1c1d2b; --body:#34364a; --muted:#5b5e73; --faint:#6e7186;
+  --rule:#dcdde6; --rule-strong:#c3c5d3;
+  --accent:#4a52a8; --accent-fill:#5962b9; --accent-soft:#e7e8f7;
+  --pass:#1b7a51; --pass-soft:#dff3e9; --open:#9a5410; --open-soft:#fbeedd; --fixed:#4a52a8; --fixed-soft:#e7e8f7; --fail:#b3302f; --fail-soft:#fbe4e3;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,"Noto Sans SC",monospace;
+  --sans:"IBM Plex Sans","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#111218; --surface:#191a22; --sunk:#20212b; --ink:#eceef6; --body:#cfd1de; --muted:#a3a6ba; --faint:#8f92a7;
+    --rule:#2b2d39; --rule-strong:#3c3f4e;
+    --accent:#a3a9f2; --accent-fill:#7c84dc; --accent-soft:#252848;
+    --pass:#5fd39c; --pass-soft:#12301f; --open:#f0a35c; --open-soft:#33230f; --fixed:#a3a9f2; --fixed-soft:#252848; --fail:#f28b89; --fail-soft:#3a1818;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#111218; --surface:#191a22; --sunk:#20212b; --ink:#eceef6; --body:#cfd1de; --muted:#a3a6ba; --faint:#8f92a7;
+  --rule:#2b2d39; --rule-strong:#3c3f4e;
+  --accent:#a3a9f2; --accent-fill:#7c84dc; --accent-soft:#252848;
+  --pass:#5fd39c; --pass-soft:#12301f; --open:#f0a35c; --open-soft:#33230f; --fixed:#a3a9f2; --fixed-soft:#252848; --fail:#f28b89; --fail-soft:#3a1818;
+}
+:root:not([data-lang="zh"]) [data-l="zh"]{display:none}
+:root[data-lang="zh"] [data-l="en"]{display:none}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--ground);color:var(--body);font:400 15.5px/1.65 var(--sans);padding-inline:20px;padding-block:0 80px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto}
+h1,h2,h3{font-family:var(--mono);color:var(--ink);margin:0;text-wrap:balance;letter-spacing:-.01em}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.15;font-weight:600}
+h2{font-size:22px;line-height:1.25;font-weight:600}
+h3{font-size:15px;line-height:1.35;font-weight:600}
+p{margin:0;max-width:72ch}
+a{color:var(--accent)}
+code,kbd{font-family:var(--mono);font-size:.86em;background:var(--sunk);border:1px solid var(--rule);border-radius:4px;padding:0 5px;color:var(--ink)}
+.eyebrow{font:500 11.5px/1.2 var(--mono);text-transform:uppercase;letter-spacing:.09em;color:var(--faint)}
+.muted{color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent-fill);outline-offset:2px}
+
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in oklab,var(--ground) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--rule);margin-inline:-20px;padding-inline:20px}
+.topbar .wrap{display:flex;align-items:center;gap:16px;height:52px}
+.brand{font:600 14px/1 var(--mono);color:var(--ink);white-space:nowrap}
+.brand .o{color:var(--muted)} .brand .d{color:var(--accent-fill)}
+.toc{display:flex;gap:14px;overflow-x:auto;scrollbar-width:none;flex:1;min-width:0}
+.toc::-webkit-scrollbar{display:none}
+.toc a{font:500 12.5px/1 var(--mono);color:var(--muted);text-decoration:none;white-space:nowrap}
+.toc a:hover{color:var(--ink)}
+.lang{display:inline-flex;border:1px solid var(--rule-strong);border-radius:8px;overflow:hidden;flex:none}
+.lang button{font:500 12px/1 var(--mono);background:transparent;color:var(--muted);border:0;padding:8px 10px;cursor:pointer}
+.lang button[aria-pressed="true"]{background:var(--ink);color:var(--ground)}
+
+header.hero{padding-block:44px 30px;display:grid;gap:18px;border-bottom:1px solid var(--rule)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font:500 11.5px/1 var(--mono);padding:6px 9px;border-radius:999px;border:1px solid var(--rule-strong);color:var(--muted);white-space:nowrap}
+.chip.pass{border-color:transparent;background:var(--pass-soft);color:var(--pass)}
+.chip.open{border-color:transparent;background:var(--open-soft);color:var(--open)}
+.lede{font-size:18px;line-height:1.55;color:var(--muted);max-width:66ch}
+.lede strong{color:var(--ink);font-weight:500}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+.stat{padding:14px 16px;display:grid;gap:4px;align-content:start}
+.stat+.stat{border-left:1px solid var(--rule)}
+.stat b{font:600 25px/1.05 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat span{font-size:12.5px;line-height:1.35;color:var(--muted)}
+@media (max-width:820px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.stat+.stat{border-left:0}.stat{border-top:1px solid var(--rule)}.stat:nth-child(-n+2){border-top:0}.stat:nth-child(even){border-left:1px solid var(--rule)}.stat:last-child{grid-column:1/-1;border-left:0}}
+
+section{padding-block:48px 8px;display:grid;gap:22px;scroll-margin-top:64px}
+.head{display:grid;gap:8px}
+.head .num{font:600 12px/1 var(--mono);color:var(--accent)}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px}
+@media (max-width:820px){.two{grid-template-columns:1fr}}
+.prose{display:grid;gap:12px}
+.prose ul{margin:0;padding-left:20px;display:grid;gap:6px}
+
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:10px}
+.scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:500 11px/1.2 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--faint);background:var(--sunk)}
+tr:last-child td{border-bottom:0}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
+td code{white-space:nowrap}
+
+/* findings */
+.findings{display:grid;gap:10px}
+.finding{display:grid;grid-template-columns:86px minmax(0,1fr);gap:14px;padding:14px 16px;background:var(--surface);border:1px solid var(--rule);border-radius:10px}
+.tag{font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;padding:5px 7px;border-radius:5px;justify-self:start;align-self:start;white-space:nowrap}
+.tag.open{background:var(--open-soft);color:var(--open)}
+.tag.fixed{background:var(--fixed-soft);color:var(--fixed)}
+.tag.note{background:var(--sunk);color:var(--muted)}
+.finding h3{margin-bottom:4px}
+.finding p{font-size:14.5px}
+@media (max-width:560px){.finding{grid-template-columns:1fr;gap:8px}}
+
+/* figures */
+.figs{display:grid;gap:22px}
+figure{margin:0;display:grid;gap:10px}
+figure img{width:100%;height:auto;display:block;border-radius:8px;border:1px solid var(--rule);background:var(--sunk)}
+figcaption{font-size:13.5px;line-height:1.5;color:var(--muted);max-width:80ch}
+figcaption b{font-family:var(--mono);font-weight:600;color:var(--ink);margin-right:6px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:820px){.grid2,.grid3{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.pair{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:14px;align-items:start}
+@media (max-width:820px){.pair{grid-template-columns:1fr}}
+.subhead{display:flex;align-items:baseline;gap:10px;border-top:1px solid var(--rule);padding-top:18px}
+
+/* suites */
+pre{margin:0;font:13px/1.6 var(--mono);background:var(--sunk);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;overflow-x:auto;color:var(--ink)}
+.ok{color:var(--pass);font-family:var(--mono);font-weight:600;white-space:nowrap}
+
+/* checklist */
+.progress{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.bar{flex:1;min-width:180px;height:8px;background:var(--sunk);border-radius:4px;overflow:hidden}
+.bar span{display:block;height:100%;background:var(--accent-fill);width:0;transition:width .2s}
+.count{font:500 13px/1 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+.btn{font:500 12.5px/1 var(--mono);background:transparent;color:var(--muted);border:1px solid var(--rule-strong);border-radius:7px;padding:8px 11px;cursor:pointer}
+.btn:hover{color:var(--ink);border-color:var(--ink)}
+.checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:820px){.checks{grid-template-columns:1fr}}
+fieldset{margin:0;border:1px solid var(--rule);border-radius:10px;background:var(--surface);padding:14px 16px 10px;display:grid;gap:2px;align-content:start;min-width:0}
+legend{font:600 13px/1 var(--mono);color:var(--ink);padding:0 6px}
+.check{display:grid;grid-template-columns:20px minmax(0,1fr);gap:10px;padding:8px 0;border-top:1px solid var(--rule);font-size:14px;line-height:1.45;cursor:pointer}
+.check:first-of-type{border-top:0}
+.check input{margin:3px 0 0;width:16px;height:16px;accent-color:var(--accent-fill)}
+.check .exp{display:block;font-size:12.5px;color:var(--faint);margin-top:2px}
+.check:has(input:checked) .txt{color:var(--faint);text-decoration:line-through;text-decoration-color:var(--rule-strong)}
+
+.limits{margin:0;padding:0;list-style:none;display:grid;gap:8px}
+.limits li{display:grid;grid-template-columns:14px minmax(0,1fr);gap:10px;font-size:14.5px}
+.limits li::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--open);margin-top:9px}
+footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--rule);font-size:13px;color:var(--muted);display:grid;gap:6px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+
+<div class="topbar"><div class="wrap">
+  <span class="brand"><span class="o">Open</span>Photoshop<span class="d">.</span></span>
+  <nav class="toc" aria-label="Sections">
+    <a href="#why"><span data-l="en">Why</span><span data-l="zh">为什么</span></a>
+    <a href="#found"><span data-l="en">What real files found</span><span data-l="zh">真实文件发现的问题</span></a>
+    <a href="#lite"><span data-l="en">Lite</span><span data-l="zh">简易版</span></a>
+    <a href="#pro"><span data-l="en">Pro</span><span data-l="zh">专业版</span></a>
+    <a href="#files"><span data-l="en">PSD &amp; RAW</span><span data-l="zh">PSD 与 RAW</span></a>
+    <a href="#ai"><span data-l="en">Local AI</span><span data-l="zh">本地 AI</span></a>
+    <a href="#suites"><span data-l="en">Automated</span><span data-l="zh">自动化测试</span></a>
+    <a href="#manual"><span data-l="en">Manual pass</span><span data-l="zh">手动测试</span></a>
+    <a href="#limits"><span data-l="en">Limits</span><span data-l="zh">已知限制</span></a>
+  </nav>
+  <div class="lang" role="group" aria-label="Language">
+    <button id="lang-en" aria-pressed="true">EN</button><button id="lang-zh" aria-pressed="false">中文</button>
+  </div>
+</div></div>
+
+<div class="wrap">
+<header class="hero">
+  <div class="chips">
+    <span class="chip pass"><span data-l="en">344 Rust tests pass</span><span data-l="zh">344 项 Rust 测试通过</span></span>
+    <span class="chip pass"><span data-l="en">66 browser checks pass</span><span data-l="zh">66 项浏览器检查通过</span></span>
+    <span class="chip open"><span data-l="en">Working name · not deployed</span><span data-l="zh">暂定名称 · 尚未上线</span></span>
+    <span class="chip">17 Sep 2026</span>
+  </div>
+  <h1><span data-l="en">OpenPhotoshop test pass: a layered photo editor that runs entirely on your device</span><span data-l="zh">OpenPhotoshop 测试报告：完全在本机运行的分层照片编辑器</span></h1>
+  <p class="lede" data-l="en">Two profiles on one Rust engine: <strong>Lite</strong> for quick fixes and <strong>Pro</strong> for Photoshop users, with PSD files, camera RAW and AI tools that run in the browser tab. Every number below comes from this pass on the production build, on real photos, PSDs and raw files. Nothing was uploaded; the network test counted zero outside requests.</p>
+  <p class="lede" data-l="zh">同一个 Rust 引擎上的两种模式：<strong>简易版</strong>用于快速修图，<strong>专业版</strong>面向 Photoshop 用户，支持 PSD 文件、相机 RAW，以及直接在浏览器标签页里运行的 AI 工具。下面每个数字都来自本次对正式构建的测试，使用的是真实照片、PSD 和 RAW 文件。整个过程没有上传任何内容，网络测试记录到的外部请求为零。</p>
+  <div class="stats">
+    <div class="stat"><b>344</b><span data-l="en">Rust tests, 0 failing (6 benchmarks skipped)</span><span data-l="zh">项 Rust 测试，0 失败（6 项基准测试跳过）</span></div>
+    <div class="stat"><b>66</b><span data-l="en">browser checks: Pro 20, Lite 20, tools 21, privacy 5</span><span data-l="zh">项浏览器检查：专业版 20、简易版 20、工具 21、隐私 5</span></div>
+    <div class="stat"><b>2.48 MB</b><span data-l="en">editing engine, gzipped (7.86 MB wasm)</span><span data-l="zh">编辑引擎 gzip 后大小（wasm 原始 7.86 MB）</span></div>
+    <div class="stat"><b>57 ms</b><span data-l="en">slider redraw on a 24 MP photo with 3 adjustment layers</span><span data-l="zh">2400 万像素照片、3 个调整图层时拖动滑块的重绘时间</span></div>
+    <div class="stat"><b>0</b><span data-l="en">network requests left the device</span><span data-l="zh">个网络请求离开本机</span></div>
+  </div>
+</header>
+
+<section id="why">
+  <div class="head"><span class="num">01</span><h2><span data-l="en">Why this is worth building</span><span data-l="zh">为什么值得做</span></h2></div>
+  <div class="two">
+    <div class="prose">
+      <p data-l="en"><strong>Photoshop users pay for AI that is metered.</strong> The single-app plan is $22.99 a month with 25 generative credits, about two premium generations. The complaints are specific: "Nothing it generates is even worth keeping, yet credits are deducted." Cancelling costs a fee Adobe paid a $150M settlement over in March 2026.</p>
+      <p data-l="zh"><strong>Photoshop 用户在为按次计费的 AI 付钱。</strong>单应用方案每月 22.99 美元，只含 25 个生成点数，大约够用两次高级生成。用户的抱怨很具体：“生成的东西根本没法用，点数却照扣。”取消订阅还要付违约金，Adobe 为此在 2026 年 3 月支付了 1.5 亿美元的和解金。</p>
+      <p data-l="en"><strong>The free alternatives each give something up.</strong> Photopea carries ads, is closed source and charges credits for AI. Affinity is free but needs a Canva login, and all its AI is Canva Premium. GIMP has no web version, drops PSD layer styles and adjustment layers, and ships no AI.</p>
+      <p data-l="zh"><strong>免费替代品各有取舍。</strong>Photopea 有广告、不开源，AI 功能要点数。Affinity 免费但必须登录 Canva，所有 AI 功能都要 Canva 高级版。GIMP 没有网页版，打开 PSD 会丢掉图层样式和调整图层，也没有 AI。</p>
+    </div>
+    <div class="prose">
+      <p data-l="en"><strong>The structural gap is the meter.</strong> A product that runs AI in its own cloud has to charge for it. Removing objects, selecting subjects, cutting out backgrounds, upscaling, denoising and culling all run on the user's own hardware here, at no cost per photo, so they can stay unlimited.</p>
+      <p data-l="zh"><strong>结构性的空档在于“计费”。</strong>在自己云端跑 AI 的产品必须收费。而在这里，去除物体、选择主体、抠图、放大、降噪和挑片都在用户自己的设备上运行，每张照片没有成本，所以可以一直不限次数。</p>
+      <p data-l="en"><strong>What a Rust core buys:</strong> one engine compiled to WebAssembly for the browser and natively for a local desktop server, with PSD round-trip as the hard part a weekend project cannot reach. No open-source editor today combines faithful PSD round-trip with local AI in a browser tab.</p>
+      <p data-l="zh"><strong>Rust 内核带来的好处：</strong>同一个引擎既编译成 WebAssembly 在浏览器里运行，也能原生编译成本地桌面服务器；而 PSD 的完整读写，正是周末项目做不到的难点。目前没有任何开源编辑器能在浏览器标签页里同时做到忠实的 PSD 读写和本地 AI。</p>
+    </div>
+  </div>
+</section>
+
+<section id="found">
+  <div class="head"><span class="num">02</span><h2><span data-l="en">What real files found that the unit tests did not</span><span data-l="zh">真实文件发现、而单元测试没发现的问题</span></h2>
+  <p class="muted" data-l="en">Unit tests use small synthetic inputs. These came from opening real photos, a real Photoshop file and real camera raw files. Open items are listed first.</p>
+  <p class="muted" data-l="zh">单元测试用的是很小的合成数据。下面这些问题来自打开真实照片、真实的 Photoshop 文件和真实的相机 RAW 文件。未解决的问题排在前面。</p></div>
+  <div class="findings">
+    <div class="finding"><span class="tag open"><span data-l="en">Open</span><span data-l="zh">未解决</span></span><div>
+      <h3><span data-l="en">Layer styles in a real PSD do not match Photoshop</span><span data-l="zh">真实 PSD 中的图层样式与 Photoshop 不一致</span></h3>
+      <p data-l="en">In <code>layer_effects.psd</code>, Outer Glow draws as a dark smudge instead of a white glow, Bevel &amp; Emboss comes out flat, Inner Glow and Drop Shadow are too faint, and Pattern Overlay is not supported (the app says so). Stroke, Colour Overlay, Gradient Overlay and Satin match. Side by side in figure 20.</p>
+      <p data-l="zh">在 <code>layer_effects.psd</code> 中，外发光被画成一团暗色污渍而不是白色光晕，斜面和浮雕是平的，内发光和投影太淡，图案叠加不支持（应用会提示）。描边、颜色叠加、渐变叠加和光泽与 Photoshop 一致。对比见图 20。</p>
+    </div></div>
+    <div class="finding"><span class="tag open"><span data-l="en">Open</span><span data-l="zh">未解决</span></span><div>
+      <h3><span data-l="en">Fast removal leaves a ghost of a walking person</span><span data-l="zh">快速去除会留下行人的残影</span></h3>
+      <p data-l="en">On the street photo, Remove in Fast mode (MI-GAN, 1.9 s) leaves a visible smear where the person was. Best mode (LaMa, 11.5 s) is much cleaner but still leaves a faint trace of the legs. Small objects such as a lapel pin disappear cleanly in both. Figure 24.</p>
+      <p data-l="zh">在街景照片上，“快速”模式的去除（MI-GAN，1.9 秒）会在原来行人的位置留下明显涂抹痕迹。“最佳”模式（LaMa，11.5 秒）干净得多，但仍能隐约看到腿部轮廓。像西装领针这样的小物体，两种模式都能干净去除。见图 24。</p>
+    </div></div>
+    <div class="finding"><span class="tag open"><span data-l="en">Open</span><span data-l="zh">未解决</span></span><div>
+      <h3><span data-l="en">Raw files develop flatter than the camera's own JPEG</span><span data-l="zh">RAW 显影比相机自带 JPEG 更平淡</span></h3>
+      <p data-l="en">Across Canon, Fujifilm, Nikon and Sony files the colours are natural, with no zipper artefacts or magenta highlights, but contrast and saturation sit below the camera's embedded preview. The default tone curve needs a stronger "camera look". Figure 21.</p>
+      <p data-l="zh">佳能、富士、尼康和索尼的文件颜色自然，没有拉链状伪影，高光也没有偏品红，但对比度和饱和度都低于相机内嵌的预览图。默认色调曲线需要更接近“机内直出”的效果。见图 21。</p>
+    </div></div>
+    <div class="finding"><span class="tag open"><span data-l="en">Open</span><span data-l="zh">未解决</span></span><div>
+      <h3><span data-l="en">PSD composites still differ on 81 of 244 files</span><span data-l="zh">244 个 PSD 中仍有 81 个合成结果有差异</span></h3>
+      <p data-l="en">Across the 269-file corpus the layer tree matches psd-tools on every file and every export re-imports, but our flattened image is within an average error of 3 (out of 255) on 163 of 244 files. The causes are knockout groups, layers clipped to pass-through groups, Hue/Saturation range maths, Vivid Light, Hard Mix and layer styles.</p>
+      <p data-l="zh">在 269 个文件的测试集中，每个文件的图层结构都与 psd-tools 一致，每次导出都能重新导入；但在 244 个可对比的文件里，只有 163 个的合成图平均误差在 3 以内（满值 255）。原因包括挖空组、剪贴到“穿透”组的图层、色相/饱和度按色域调整的算法、亮光、实色混合以及图层样式。</p>
+    </div></div>
+    <div class="finding"><span class="tag open"><span data-l="en">Open</span><span data-l="zh">未解决</span></span><div>
+      <h3><span data-l="en">AI denoise is slow on the CPU path</span><span data-l="zh">AI 降噪在 CPU 路径上很慢</span></h3>
+      <p data-l="en">Headless Chromium has no GPU, so AI ran on the CPU: denoising a 900 × 899 image took 15.8 s and the detailed 4× upscale of a 268 × 276 crop took 29 s. The GPU path is expected to be several times faster but was not measured in this pass.</p>
+      <p data-l="zh">无头 Chromium 没有 GPU，所以 AI 都在 CPU 上运行：一张 900 × 899 的图降噪用了 15.8 秒，268 × 276 的小图做“细节”4 倍放大用了 29 秒。GPU 路径预计快好几倍，但本次没有测量。</p>
+    </div></div>
+    <div class="finding"><span class="tag fixed"><span data-l="en">Fixed</span><span data-l="zh">已修复</span></span><div>
+      <h3><span data-l="en">Content-aware scale tore the red curtains</span><span data-l="zh">内容识别缩放撕裂了红色窗帘</span></h3>
+      <p data-l="en">With skin protection on, the portrait's red curtains passed the skin-colour test and were protected instead of the background, so seams cut through them. The colour rule was tightened and stray matches outside solid areas are now ignored; the face is preserved and the curtains are clean.</p>
+      <p data-l="zh">开启“保护肤色”后，人像照片里的红色窗帘通过了肤色检测，被当成需要保护的区域，结果接缝从窗帘中间穿过。现在收紧了颜色规则，并忽略实心区域之外的零星匹配；人脸完整保留，窗帘也干净了。</p>
+    </div></div>
+    <div class="finding"><span class="tag fixed"><span data-l="en">Fixed</span><span data-l="zh">已修复</span></span><div>
+      <h3><span data-l="en">Content-aware fill left seams, then smeared skin into the suit</span><span data-l="zh">内容识别填充先留下接缝，之后又把皮肤抹进西装</span></h3>
+      <p data-l="en">A 200 × 200 hole on the curtain first showed faint seams; the first fix pulled skin texture into a hole on the suit. Both were caught by looking at the output. The fill now scores an error of 2.1 on the curtain against 24.5 for a plain colour fill.</p>
+      <p data-l="zh">窗帘上 200 × 200 的空洞一开始留下了淡淡的接缝；第一次修复又把皮肤纹理填进了西装上的空洞。这两个问题都是看输出图片发现的。现在窗帘上的填充误差为 2.1，而纯色填充是 24.5。</p>
+    </div></div>
+    <div class="finding"><span class="tag fixed"><span data-l="en">Fixed</span><span data-l="zh">已修复</span></span><div>
+      <h3><span data-l="en">Editing text wrote hidden steps into history</span><span data-l="zh">编辑文字时往历史记录里写入了隐藏步骤</span></h3>
+      <p data-l="en">Text editing and transform previews hid the original layer with an undoable "Hide Layer" step, and Lite's look previews left hidden redo entries. Both now hide layers in the viewport only, and previews render on a throwaway copy of the document.</p>
+      <p data-l="zh">编辑文字和变换预览时，原图层是通过一个可撤销的“隐藏图层”步骤藏起来的；简易版生成风格预览时也会留下隐藏的重做记录。现在两者都只在视图里隐藏图层，预览则在文档的临时副本上渲染。</p>
+    </div></div>
+    <div class="finding"><span class="tag fixed"><span data-l="en">Fixed</span><span data-l="zh">已修复</span></span><div>
+      <h3><span data-l="en">Three tool bugs caught in screenshots</span><span data-l="zh">截图里发现的三个工具问题</span></h3>
+      <p data-l="en">Rotated crops left empty corners; Pixelate stamped every visible layer and covered the arrows and text; tool commands sent reactive state objects that could not cross into the engine's worker. Quick select also queued a backlog while dragging (145–195 ms per step); strokes now merge while a step is running.</p>
+      <p data-l="zh">旋转裁剪会留下空白角落；马赛克会把所有可见图层合并，盖住箭头和文字；工具发出的命令带着响应式状态对象，无法传给引擎的工作线程。快速选择在拖动时还会排起长队（每步 145–195 毫秒），现在执行中的步骤会合并后续笔画。</p>
+    </div></div>
+    <div class="finding"><span class="tag note"><span data-l="en">Note</span><span data-l="zh">说明</span></span><div>
+      <h3><span data-l="en">The bundle names Hugging Face and GitHub, but never calls them</span><span data-l="zh">代码包里出现了 Hugging Face 和 GitHub 地址，但从不访问</span></h3>
+      <p data-l="en">The shipped worker contains 35 upstream model URLs. They are provenance labels for the model licence screen; downloads go through the app's own origin, and the network test recorded zero requests leaving localhost while both profiles were used.</p>
+      <p data-l="zh">发布的工作线程代码里有 35 个模型上游地址，它们只是模型许可说明里的来源标注；实际下载都走应用自己的域名。网络测试在使用两种模式的整个过程中，记录到离开 localhost 的请求为零。</p>
+    </div></div>
+  </div>
+</section>
+
+<section id="lite">
+  <div class="head"><span class="num">03</span><h2><span data-l="en">Lite: tap a fix</span><span data-l="zh">简易版：点一下就修好</span></h2>
+  <p class="muted" data-l="en">Production build, 1440 × 900, public-domain portrait. The Lite script checks every step below and exports a JPEG under 500 KB.</p>
+  <p class="muted" data-l="zh">正式构建，1440 × 900，公有领域人像。简易版测试脚本会检查下面每一步，并导出一张小于 500 KB 的 JPEG。</p></div>
+  <div class="figs">
+    <figure><img src="IMG_01" alt="Profile chooser" loading="lazy"><figcaption><b>01</b><span data-l="en">First run asks Simple or Professional; switching later keeps every edit.</span><span data-l="zh">首次打开会问选简易还是专业；之后切换不会丢失任何编辑。</span></figcaption></figure>
+    <div class="grid2">
+      <figure><img src="IMG_02" alt="Lite with a photo" loading="lazy"><figcaption><b>02</b><span data-l="en">A 2687 × 3356 photo opens with the Adjust panel and a “Describe an edit” bar with 8 suggestions.</span><span data-l="zh">2687 × 3356 的照片打开后显示“调整”面板，以及带 8 个建议的“描述修改”输入框。</span></figcaption></figure>
+      <figure><img src="IMG_03" alt="Master sliders" loading="lazy"><figcaption><b>03</b><span data-l="en">Light +45 expands into its sliders: exposure became +0.43 and highlights −20, all on one editable “Adjustments” layer.</span><span data-l="zh">“光线”+45 展开后可见细分滑块：曝光变为 +0.43、高光 −20，全部在同一个可再编辑的“调整”图层上。</span></figcaption></figure>
+      <figure><img src="IMG_04" alt="Auto versions" loading="lazy"><figcaption><b>04</b><span data-l="en">Auto offers 4 versions (Auto, Vivid, Natural, Black and white), each rendered by the engine, not a CSS filter.</span><span data-l="zh">“自动”给出 4 个版本（自动、鲜艳、自然、黑白），每个都由引擎真实渲染，不是 CSS 滤镜。</span></figcaption></figure>
+      <figure><img src="IMG_05" alt="Describe an edit" loading="lazy"><figcaption><b>05</b><span data-l="en">“make it warmer and brighter” becomes one reviewable step, “Warmer, Brighter”, applied only after Apply.</span><span data-l="zh">“make it warmer and brighter”被转换成一个可检查的步骤“更暖、更亮”，点“应用”后才生效。</span></figcaption></figure>
+      <figure><img src="IMG_06" alt="Looks with strength" loading="lazy"><figcaption><b>06</b><span data-l="en">14 looks; Film applied at 60% strength.</span><span data-l="zh">14 种风格；“胶片”以 60% 强度应用。</span></figcaption></figure>
+      <figure><img src="IMG_07" alt="Crop" loading="lazy"><figcaption><b>07</b><span data-l="en">Crop to 4:5 with resize presets for Instagram, story, YouTube and web.</span><span data-l="zh">按 4:5 裁剪，并提供 Instagram、快拍、YouTube 和网页的尺寸预设。</span></figcaption></figure>
+      <figure><img src="IMG_08" alt="Markup" loading="lazy"><figcaption><b>08</b><span data-l="en">Arrow and text from OpenCapture's markup, now with 8 colours and 3 widths, kept as editable layers.</span><span data-l="zh">来自 OpenCapture 的箭头和文字标注，现在有 8 种颜色、3 种粗细，并保留为可编辑图层。</span></figcaption></figure>
+      <figure><img src="IMG_09" alt="Steps" loading="lazy"><figcaption><b>09</b><span data-l="en">Steps lists 8 edits; tapping one goes back to it.</span><span data-l="zh">“步骤”列出 8 次编辑；点任意一步即可回到那一步。</span></figcaption></figure>
+    </div>
+    <figure><img src="IMG_10" alt="Export" loading="lazy"><figcaption><b>10</b><span data-l="en">Export with “Under 500 KB” produced a 492 KB JPEG; location and camera details are not copied.</span><span data-l="zh">选择“500 KB 以内”导出，得到 492 KB 的 JPEG；位置和相机信息不会被带出。</span></figcaption></figure>
+    <div class="subhead"><h3><span data-l="en">Dark theme and phone</span><span data-l="zh">深色主题与手机</span></h3></div>
+    <figure><img src="IMG_11" alt="Lite dark" loading="lazy"><figcaption><b>11</b><span data-l="en">Dark mode follows the system; look thumbnails are real renders of the landscape photo.</span><span data-l="zh">深色模式跟随系统；风格缩略图是这张风景照的真实渲染。</span></figcaption></figure>
+    <div class="grid4">
+      <figure><img src="IMG_12A" alt="Phone open" loading="lazy"><figcaption><b>12a</b><span data-l="en">iPhone size: Adjust sheet and 7-tab bar.</span><span data-l="zh">iPhone 尺寸：调整面板和 7 个底部标签。</span></figcaption></figure>
+      <figure><img src="IMG_12B" alt="Phone adjust" loading="lazy"><figcaption><b>12b</b><span data-l="en">Light expanded; the slider holds +45 under touch.</span><span data-l="zh">展开“光线”；触摸操作下滑块保持在 +45。</span></figcaption></figure>
+      <figure><img src="IMG_12C" alt="Phone looks" loading="lazy"><figcaption><b>12c</b><span data-l="en">Looks scroll sideways; strength 60%.</span><span data-l="zh">风格横向滚动；强度 60%。</span></figcaption></figure>
+      <figure><img src="IMG_12D" alt="Phone export" loading="lazy"><figcaption><b>12d</b><span data-l="en">Export sheet: 492 KB under the 500 KB limit.</span><span data-l="zh">导出面板：492 KB，低于 500 KB 上限。</span></figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="pro">
+  <div class="head"><span class="num">04</span><h2><span data-l="en">Pro: the Photoshop workspace</span><span data-l="zh">专业版：Photoshop 式工作区</span></h2>
+  <p class="muted" data-l="en">Dark workspace, Photoshop's menus and shortcuts. The Pro script passes 20 of 20 checks at 1440 × 900 and 1280 × 720.</p>
+  <p class="muted" data-l="zh">深色工作区，沿用 Photoshop 的菜单和快捷键。专业版脚本在 1440 × 900 和 1280 × 720 下 20 项检查全部通过。</p></div>
+  <div class="figs">
+    <div class="grid2">
+      <figure><img src="IMG_13" alt="Pro empty" loading="lazy"><figcaption><b>13</b><span data-l="en">Empty state: Open or New, or drop a file anywhere.</span><span data-l="zh">空白状态：打开或新建，也可以把文件拖到任意位置。</span></figcaption></figure>
+      <figure><img src="IMG_14" alt="Curves" loading="lazy"><figcaption><b>14</b><span data-l="en">A Curves adjustment layer; dragging the point changed the curve and the photo.</span><span data-l="zh">曲线调整图层；拖动控制点后曲线和照片都随之变化。</span></figcaption></figure>
+      <figure><img src="IMG_15" alt="Layer style" loading="lazy"><figcaption><b>15</b><span data-l="en">Layer Style dialog with 10 effects; Cancel leaves no history step.</span><span data-l="zh">图层样式对话框，含 10 种效果；点“取消”不会留下历史步骤。</span></figcaption></figure>
+      <figure><img src="IMG_16" alt="Gaussian blur" loading="lazy"><figcaption><b>16</b><span data-l="en">Gaussian Blur with live preview; OK adds exactly one history step (10 → 11).</span><span data-l="zh">高斯模糊带实时预览；点“确定”只增加一步历史（10 → 11）。</span></figcaption></figure>
+      <figure><img src="IMG_17" alt="Smart filter" loading="lazy"><figcaption><b>17</b><span data-l="en">Convert for Smart Filters, then Median is listed under the layer and can be switched off.</span><span data-l="zh">转换为智能滤镜后，“中间值”显示在图层下方，可以随时关闭。</span></figcaption></figure>
+      <figure><img src="IMG_18" alt="Filter menu" loading="lazy"><figcaption><b>18</b><span data-l="en">Filter menu grouped as in Photoshop: Blur, Distort, Noise, Pixelate, Render, Sharpen, Stylize.</span><span data-l="zh">滤镜菜单按 Photoshop 分组：模糊、扭曲、杂色、像素化、渲染、锐化、风格化。</span></figcaption></figure>
+    </div>
+    <figure><img src="IMG_19" alt="History" loading="lazy"><figcaption><b>19</b><span data-l="en">History panel: clicking an earlier step undid the resize to 1200 px and restored 2687 × 3356.</span><span data-l="zh">历史记录面板：点击更早的步骤，撤销了缩小到 1200 像素的操作，恢复为 2687 × 3356。</span></figcaption></figure>
+    <figure><img src="IMG_22" alt="24 MP document" loading="lazy"><figcaption><b>22</b><span data-l="en">A 6000 × 4000 (24 MP) image generated in the page opened in 409 ms and pans smoothly; the status bar reports 91.6 M.</span><span data-l="zh">在页面内生成的 6000 × 4000（2400 万像素）图像 409 毫秒打开，平移流畅；状态栏显示 91.6 M。</span></figcaption></figure>
+    <div class="subhead"><h3><span data-l="en">Canvas tools</span><span data-l="zh">画布工具</span></h3><span class="muted" style="font-size:13px"><span data-l="en">21 of 21 checks on the tool harness</span><span data-l="zh">工具测试页 21 项检查全部通过</span></span></div>
+    <div class="grid4">
+      <figure><img src="IMG_23A" alt="Marquee" loading="lazy"><figcaption><b>23a</b><span data-l="en">Marquee selects 1200 × 900; shift adds.</span><span data-l="zh">选框选中 1200 × 900；按住 Shift 可加选。</span></figcaption></figure>
+      <figure><img src="IMG_23B" alt="Rotated crop" loading="lazy"><figcaption><b>23b</b><span data-l="en">Rotated crop: one Straighten and one Crop step.</span><span data-l="zh">旋转裁剪：一步“拉直”、一步“裁剪”。</span></figcaption></figure>
+      <figure><img src="IMG_23C" alt="Annotations" loading="lazy"><figcaption><b>23c</b><span data-l="en">Arrow, redaction box and highlighter as layers.</span><span data-l="zh">箭头、遮挡框和荧光笔都是独立图层。</span></figcaption></figure>
+      <figure><img src="IMG_23D" alt="Transform" loading="lazy"><figcaption><b>23d</b><span data-l="en">Free transform scales the photo layer to half.</span><span data-l="zh">自由变换把照片图层缩小到一半。</span></figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="files">
+  <div class="head"><span class="num">05</span><h2><span data-l="en">PSD and camera RAW</span><span data-l="zh">PSD 与相机 RAW</span></h2></div>
+  <div class="figs">
+    <div class="pair">
+      <figure><img src="IMG_20A" alt="PSD in OpenPhotoshop" loading="lazy"><figcaption><b>20a</b><span data-l="en">layer_effects.psd in Pro: every layer and each effect is listed and can be toggled; Pattern Overlay is reported as unsupported.</span><span data-l="zh">专业版中的 layer_effects.psd：每个图层和每种效果都列出且可开关；图案叠加会提示不支持。</span></figcaption></figure>
+      <figure><img src="IMG_20B" alt="Photoshop's own merged image" loading="lazy"><figcaption><b>20b</b><span data-l="en">The merged image Photoshop saved in the same file. Compare Bevel &amp; Emboss, Outer Glow and Inner Glow with 20a.</span><span data-l="zh">同一文件中 Photoshop 保存的合成图。可与 20a 对比斜面和浮雕、外发光、内发光。</span></figcaption></figure>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th><span data-l="en">PSD corpus, 269 real files</span><span data-l="zh">PSD 测试集：269 个真实文件</span></th><th><span data-l="en">Result</span><span data-l="zh">结果</span></th></tr></thead>
+      <tbody>
+        <tr><td><span data-l="en">Imported without error</span><span data-l="zh">无错误导入</span></td><td class="num">269 / 269</td></tr>
+        <tr><td><span data-l="en">Layer tree identical to psd-tools (names, kinds, blend, opacity, nesting)</span><span data-l="zh">图层结构与 psd-tools 完全一致（名称、类型、混合模式、不透明度、嵌套）</span></td><td class="num">269 / 269</td></tr>
+        <tr><td><span data-l="en">Export → re-import with ours and with psd-tools</span><span data-l="zh">导出后用我们自己和 psd-tools 重新导入</span></td><td class="num">269 / 269</td></tr>
+        <tr><td><span data-l="en">Import → project → export gives identical PSD bytes</span><span data-l="zh">导入 → 保存为项目 → 导出，PSD 字节完全相同</span></td><td class="num">269 / 269</td></tr>
+        <tr><td><span data-l="en">Composite within mean error 1 / 3 / 10 of the file's own merged image (of 244 with one)</span><span data-l="zh">合成图与文件自带合成图的平均误差在 1 / 3 / 10 以内（共 244 个可比文件）</span></td><td class="num">152 / 163 / 186</td></tr>
+      </tbody>
+    </table></div>
+    <div class="grid2">
+      <figure><img src="IMG_21A" alt="Camera Raw dialog" loading="lazy"><figcaption><b>21a</b><span data-l="en">Nikon Z 6 NEF (6048 × 4024) through the app's own opener: first developed preview in 1.13 s, with white balance, tone and colour controls.</span><span data-l="zh">通过应用自带的打开流程打开尼康 Z 6 的 NEF（6048 × 4024）：1.13 秒出第一张显影预览，可调白平衡、影调和色彩。</span></figcaption></figure>
+      <figure><img src="IMG_21B" alt="Our raw develop vs the camera JPEG" loading="lazy"><figcaption><b>21b</b><span data-l="en">Left, our develop; right, the camera's embedded JPEG. Natural colour and no artefacts, but lower contrast and saturation.</span><span data-l="zh">左为我们的显影，右为相机内嵌 JPEG。颜色自然、没有伪影，但对比度和饱和度偏低。</span></figcaption></figure>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th><span data-l="en">Camera</span><span data-l="zh">相机</span></th><th><span data-l="en">File</span><span data-l="zh">文件</span></th><th><span data-l="en">First preview</span><span data-l="zh">首张预览</span></th><th><span data-l="en">Open at full size</span><span data-l="zh">完整尺寸打开</span></th></tr></thead>
+      <tbody>
+        <tr><td>Canon EOS R8</td><td><code>.cr3</code> 6000 × 4000</td><td class="num">1.43 s</td><td class="num">8.9 s</td></tr>
+        <tr><td>Fujifilm X-S10 (X-Trans)</td><td><code>.raf</code> 6240 × 4160</td><td class="num">1.79 s</td><td class="num">14.8 s</td></tr>
+        <tr><td>Nikon Z 6</td><td><code>.nef</code> 6048 × 4024</td><td class="num">1.12 s</td><td class="num">8.8 s</td></tr>
+        <tr><td>Sony α7C</td><td><code>.arw</code> 6000 × 4000</td><td class="num">0.95 s</td><td class="num">8.4 s</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="ai">
+  <div class="head"><span class="num">06</span><h2><span data-l="en">Local AI on real photos</span><span data-l="zh">真实照片上的本地 AI</span></h2>
+  <p class="muted" data-l="en">Outputs of the AI suite, unedited. All 13 models passed their pixel-parity check on the CPU path. Times are headless Chromium on this Mac with no GPU.</p>
+  <p class="muted" data-l="zh">以下是 AI 测试套件的原始输出，未经修饰。全部 13 个模型在 CPU 路径上通过了像素一致性检查。时间为本机无头 Chromium、无 GPU 条件下测得。</p></div>
+  <div class="figs">
+    <div class="grid3">
+      <figure><img src="IMG_24A" alt="Original street photo" loading="lazy"><figcaption><b>24a</b><span data-l="en">Original (CC0). Target: the person walking away on the right.</span><span data-l="zh">原图（CC0）。目标：右侧走远的行人。</span></figcaption></figure>
+      <figure><img src="IMG_24B" alt="Remove, fast" loading="lazy"><figcaption><b>24b</b><span data-l="en">Fast (MI-GAN), 1.9 s: a visible smear remains.</span><span data-l="zh">快速（MI-GAN），1.9 秒：仍有明显涂抹痕迹。</span></figcaption></figure>
+      <figure><img src="IMG_24C" alt="Remove, best" loading="lazy"><figcaption><b>24c</b><span data-l="en">Best (LaMa), 11.5 s: clean street, faint trace of legs.</span><span data-l="zh">最佳（LaMa），11.5 秒：街面干净，腿部痕迹很淡。</span></figcaption></figure>
+      <figure><img src="IMG_25A" alt="Background removed" loading="lazy"><figcaption><b>25a</b><span data-l="en">Remove background on a product photo, 2.7 s; laces and eyelets kept.</span><span data-l="zh">商品照片去背景，2.7 秒；鞋带和鞋眼完整保留。</span></figcaption></figure>
+      <figure><img src="IMG_25B" alt="Object selection" loading="lazy"><figcaption><b>25b</b><span data-l="en">Click on the brown jacket: 2.2 s first click, 0.2 s after; red marks what is not selected.</span><span data-l="zh">点击棕色夹克：首次 2.2 秒，之后 0.2 秒；红色表示未选中的区域。</span></figcaption></figure>
+      <figure><img src="IMG_25C" alt="Blur background" loading="lazy"><figcaption><b>25c</b><span data-l="en">Blur background, 2.9 s, with the subject cut out by MODNet.</span><span data-l="zh">背景虚化，2.9 秒，主体由 MODNet 抠出。</span></figcaption></figure>
+    </div>
+    <div class="grid4">
+      <figure><img src="IMG_26A" alt="Upscale input" loading="lazy"><figcaption><b>26a</b><span data-l="en">A 268 × 276 crop…</span><span data-l="zh">268 × 276 的小图……</span></figcaption></figure>
+      <figure><img src="IMG_26B" alt="Upscaled 4x" loading="lazy"><figcaption><b>26b</b><span data-l="en">…upscaled 4× to 1072 × 1104 in 3.1 s.</span><span data-l="zh">……3.1 秒放大 4 倍到 1072 × 1104。</span></figcaption></figure>
+      <figure><img src="IMG_26C" alt="Face restored" loading="lazy"><figcaption><b>26c</b><span data-l="en">Face restored with GFPGAN in 4.2 s.</span><span data-l="zh">GFPGAN 人脸修复，4.2 秒。</span></figcaption></figure>
+      <figure><img src="IMG_26D" alt="Colourised" loading="lazy"><figcaption><b>26d</b><span data-l="en">Migrant Mother colourised in 4.4 s.</span><span data-l="zh">《移民母亲》上色，4.4 秒。</span></figcaption></figure>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th><span data-l="en">Describe an edit (typed)</span><span data-l="zh">描述修改（输入内容）</span></th><th><span data-l="en">What the planner produced</span><span data-l="zh">规划器生成的结果</span></th></tr></thead>
+      <tbody>
+        <tr><td><code>brighter and a bit warmer</code></td><td><span data-l="en">One adjustment layer: exposure +0.35, temperature +12.5</span><span data-l="zh">一个调整图层：曝光 +0.35，色温 +12.5</span></td></tr>
+        <tr><td><code>make it pop</code></td><td><span data-l="en">Contrast +20, vibrance +25, clarity +15</span><span data-l="zh">对比度 +20，自然饱和度 +25，清晰度 +15</span></td></tr>
+        <tr><td><code>black and white with more contrast</code></td><td><span data-l="en">Black and white 100, contrast +25</span><span data-l="zh">黑白 100，对比度 +25</span></td></tr>
+        <tr><td><code>remove the background</code></td><td><span data-l="en">The AI action “Remove background”</span><span data-l="zh">调用 AI 操作“去除背景”</span></td></tr>
+        <tr><td><code>replace the sky with a sunset</code></td><td><span data-l="en">Declined honestly: needs a generative model that does not run in the browser</span><span data-l="zh">如实拒绝：需要生成式模型，无法在浏览器中运行</span></td></tr>
+        <tr><td><code>make the dog talk</code></td><td><span data-l="en">Declined with example phrasings</span><span data-l="zh">拒绝，并给出可用的说法示例</span></td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="suites">
+  <div class="head"><span class="num">07</span><h2><span data-l="en">Automated suites</span><span data-l="zh">自动化测试</span></h2>
+  <p class="muted" data-l="en">Run from <code>openphotoshop/</code>. If the linker fails with exit status 69 after an Xcode update, prefix commands with <code>DEVELOPER_DIR=/Library/Developer/CommandLineTools</code> until the Xcode licence is accepted.</p>
+  <p class="muted" data-l="zh">在 <code>openphotoshop/</code> 目录下运行。如果 Xcode 更新后链接器报 exit status 69，在接受 Xcode 许可之前，先在命令前加上 <code>DEVELOPER_DIR=/Library/Developer/CommandLineTools</code>。</p></div>
+<pre>cargo test --workspace --release                      # 344 passed, 0 failed, 6 ignored (benchmarks)
+scripts/build-wasm.sh && (cd apps/web && npx vite build)
+(cd apps/web && npx vite preview --port 5203 --strictPort) &amp;
+URL=http://localhost:5203/ node apps/web/e2e/pro.spec.mjs      # 20/20 checks passed
+URL=http://localhost:5203/ node apps/web/e2e/lite.spec.mjs     # all passed (desktop + iPhone)
+node apps/web/e2e/ship.spec.mjs                                # 0 requests left localhost
+(cd apps/web && npx vite --port 5217 --strictPort) &amp;
+node apps/web/e2e/tools.spec.mjs                               # 21/21 passed
+URL=http://localhost:5217/ node apps/web/e2e/ai.mjs            # 8 features, outputs in target/ai/out
+URL=http://localhost:5217/src/lib/raw-harness.html node apps/web/e2e/raw.mjs testdata/raw/*.nef
+node apps/web/e2e/capture.mjs target/ship/shots                # screenshots 01–05</pre>
+  <div class="scroll"><table>
+    <thead><tr><th><span data-l="en">Suite</span><span data-l="zh">测试套件</span></th><th><span data-l="en">Result</span><span data-l="zh">结果</span></th><th><span data-l="en">A failure here means</span><span data-l="zh">这里失败意味着</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>editor-core</code></td><td class="ok">70</td><td><span data-l="en">Pixels, layers, blend modes, undo or smart objects are wrong. One test proves scaling a smart object down and back up is lossless.</span><span data-l="zh">像素、图层、混合模式、撤销或智能对象出错。其中一项测试证明智能对象缩小再放大不会损失画质。</span></td></tr>
+      <tr><td><code>editor-filters</code></td><td class="ok">50</td><td><span data-l="en">A filter changed its output. Real-photo tests compare content-aware fill and spot heal against a plain colour fill.</span><span data-l="zh">某个滤镜的输出变了。真实照片测试会把内容识别填充和污点修复与纯色填充对比。</span></td></tr>
+      <tr><td><code>editor-paint</code> · <code>editor-select</code></td><td class="ok">26 · 36</td><td><span data-l="en">Brush strokes, healing, magic wand, quick select or refine edge regressed. A stroke must undo byte for byte.</span><span data-l="zh">画笔、修复、魔棒、快速选择或调整边缘出现回退。一笔绘制的撤销必须逐字节还原。</span></td></tr>
+      <tr><td><code>editor-transform</code></td><td class="ok">29</td><td><span data-l="en">Free transform, warp, liquify or content-aware scale changed. Includes the curtain-tearing case.</span><span data-l="zh">自由变换、变形、液化或内容识别缩放出现变化，包括撕裂窗帘的那个用例。</span></td></tr>
+      <tr><td><code>editor-psd</code> · <code>editor-project</code></td><td class="ok">27 · 6</td><td><span data-l="en">A PSD no longer imports, round-trips or matches psd-tools; the 269-file corpus test runs in about 30 s.</span><span data-l="zh">某个 PSD 无法导入、往返读写失败或与 psd-tools 不一致；269 个文件的测试集约需 30 秒。</span></td></tr>
+      <tr><td><code>editor-raw</code> · <code>editor-ai</code></td><td class="ok">29 · 46</td><td><span data-l="en">Raw decoding, demosaic, tiling, mask geometry or the edit planner broke.</span><span data-l="zh">RAW 解码、去马赛克、分块、蒙版几何或编辑规划器出错。</span></td></tr>
+      <tr><td><code>editor-server</code></td><td class="ok">25</td><td><span data-l="en">The local server lost a security or loading guarantee: headers, path traversal (21 variants), one-time file tokens.</span><span data-l="zh">本地服务器失去了某项安全或加载保证：响应头、路径穿越（21 种变体）、一次性文件令牌。</span></td></tr>
+      <tr><td><code>pro.spec</code> · <code>lite.spec</code> · <code>tools.spec</code></td><td class="ok">20 · 20 · 21</td><td><span data-l="en">A user-visible flow broke in the real app: opening, adjusting, layers, filters, crop, markup, steps or export size.</span><span data-l="zh">真实应用中的用户流程坏了：打开、调整、图层、滤镜、裁剪、标注、步骤或导出大小。</span></td></tr>
+      <tr><td><code>ship.spec</code></td><td class="ok">5</td><td><span data-l="en">The privacy claim is false: something was requested from outside the device.</span><span data-l="zh">隐私承诺不成立：有内容向设备外部发出了请求。</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="manual">
+  <div class="head"><span class="num">08</span><h2><span data-l="en">Manual pass</span><span data-l="zh">手动测试</span></h2>
+  <p class="muted" data-l="en">Open <code>http://localhost:5203/</code> (the production build) in Edge or Chrome. Your ticks are saved in this browser.</p>
+  <p class="muted" data-l="zh">在 Edge 或 Chrome 中打开 <code>http://localhost:5203/</code>（正式构建）。勾选记录会保存在当前浏览器里。</p></div>
+  <div class="progress card" style="padding:14px 16px">
+    <span class="count" id="count">0 / 0</span>
+    <div class="bar" aria-hidden="true"><span id="bar"></span></div>
+    <button class="btn" id="reset"><span data-l="en">Reset</span><span data-l="zh">重置</span></button>
+  </div>
+  <div class="checks" id="checks"></div>
+</section>
+
+<section id="limits">
+  <div class="head"><span class="num">09</span><h2><span data-l="en">Known limits</span><span data-l="zh">已知限制</span></h2></div>
+  <ul class="limits">
+    <li><span data-l="en"><strong>Working name, not deployed.</strong> “Photoshop” is Adobe's trademark, so nothing is published under this name. Everything runs locally; there is no public URL, account or store build yet.</span><span data-l="zh"><strong>暂定名称，尚未上线。</strong>“Photoshop”是 Adobe 的注册商标，因此不会以此名称发布。目前一切都在本地运行，没有公开网址、账号或应用商店版本。</span></li>
+    <li><span data-l="en"><strong>AI was tested on the CPU only.</strong> Headless browsers have no GPU; the WebGPU path and its canary were not measured in this pass. Generative fill and other native-GPU features are not built.</span><span data-l="zh"><strong>AI 只在 CPU 上测试过。</strong>无头浏览器没有 GPU，本次没有测量 WebGPU 路径及其一致性检查。生成式填充等需要本地 GPU 的功能尚未开发。</span></li>
+    <li><span data-l="en"><strong>8-bit documents.</strong> 16- and 32-bit PSD, TIFF and raw files are converted to 8-bit on open.</span><span data-l="zh"><strong>文档为 8 位。</strong>16 位和 32 位的 PSD、TIFF 与 RAW 文件打开时会转换成 8 位。</span></li>
+    <li><span data-l="en"><strong>PSDs we write are not verified in Photoshop itself.</strong> Adjustment, text and smart-object layers reopen in our reader and in psd-tools; nobody has reopened them in Photoshop.</span><span data-l="zh"><strong>我们写出的 PSD 尚未在 Photoshop 里验证。</strong>调整、文字和智能对象图层能被我们自己的读取器和 psd-tools 重新打开，但还没人用 Photoshop 打开过。</span></li>
+    <li><span data-l="en"><strong>The photo library is not wired in.</strong> Folder browsing, assisted culling, batch export and Actions exist in code but are not reachable from either profile.</span><span data-l="zh"><strong>照片库尚未接入界面。</strong>文件夹浏览、辅助挑片、批量导出和动作已写好代码，但两种模式里都还无法使用。</span></li>
+    <li><span data-l="en"><strong>English only.</strong> The eight-language runtime is in place; the seven translations are not written.</span><span data-l="zh"><strong>目前只有英文。</strong>八种语言的翻译框架已就位，但其余七种语言的译文还没写。</span></li>
+    <li><span data-l="en"><strong>Phones were emulated, not real.</strong> iPhone sizing and touch ran in Chromium; no real device or simulator was used. onnxruntime-web cannot run on iOS 17 Safari.</span><span data-l="zh"><strong>手机为模拟测试。</strong>iPhone 尺寸和触摸是在 Chromium 中模拟的，没有使用真机或模拟器。onnxruntime-web 无法在 iOS 17 的 Safari 上运行。</span></li>
+    <li><span data-l="en"><strong>Some operations are slow in the browser.</strong> Surface blur takes 8 s on a 12 MP image in wasm, quick select 145–195 ms per brush step, AI denoise 15.8 s for 900 × 899 on CPU.</span><span data-l="zh"><strong>部分操作在浏览器中较慢。</strong>1200 万像素图片的表面模糊在 wasm 中需要 8 秒，快速选择每个笔画步骤 145–195 毫秒，CPU 上对 900 × 899 的图做 AI 降噪需要 15.8 秒。</span></li>
+    <li><span data-l="en"><strong>Single timing runs.</strong> Browser times are one run each on a busy machine; treat them as orders of magnitude, not benchmarks.</span><span data-l="zh"><strong>计时只跑了一次。</strong>浏览器中的时间是在负载较高的机器上各跑一次得到的，只能看数量级，不能当作基准。</span></li>
+  </ul>
+</section>
+
+<footer>
+  <span data-l="en">Photos: White House portrait (public domain), street and product (CC0), Mount Rainier and Migrant Mother (public domain), raw files from raw.pixls.us (CC0). PSD test files from psd-tools and ag-psd (MIT). Source: <code>openphotoshop/docs/artifacts/test-guide/</code>.</span>
+  <span data-l="zh">照片：白宫官方肖像（公有领域），街景与商品照（CC0），雷尼尔山与《移民母亲》（公有领域），RAW 文件来自 raw.pixls.us（CC0）。PSD 测试文件来自 psd-tools 和 ag-psd（MIT）。源文件：<code>openphotoshop/docs/artifacts/test-guide/</code>。</span>
+</footer>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function setLang(l){
+    root.dataset.lang=l; root.lang=l==="zh"?"zh-Hans":"en";
+    document.getElementById("lang-en").setAttribute("aria-pressed", l!=="zh");
+    document.getElementById("lang-zh").setAttribute("aria-pressed", l==="zh");
+    try{localStorage.setItem("ops-guide-lang",l)}catch(e){}
+  }
+  var saved=null; try{saved=localStorage.getItem("ops-guide-lang")}catch(e){}
+  setLang(saved==="zh"?"zh":"en");
+  document.getElementById("lang-en").onclick=function(){setLang("en")};
+  document.getElementById("lang-zh").onclick=function(){setLang("zh")};
+
+  var SECTIONS=[
+    {en:"Start and profiles", zh:"启动与模式", items:[
+      ["First load shows “How do you like to edit?” with Simple and Professional","首次加载显示“How do you like to edit?”，含简易和专业两个选项","No request to any other site in the Network panel","网络面板中没有向其他站点发出请求"],
+      ["Choose Simple, open a JPEG, then Open in Pro","选择简易，打开一张 JPEG，然后点“在专业版中打开”","The same photo and edits appear in Pro","专业版中出现同一张照片和同样的编辑"],
+      ["Switch to Simple from Pro","在专业版中切换回简易","Layers made in Pro stay; Lite shows the result","专业版中建的图层仍在；简易版显示最终效果"],
+      ["Reload the page with a document open","打开文档后刷新页面","The browser warns about unsaved changes","浏览器提示有未保存的更改"]
+    ]},
+    {en:"Lite", zh:"简易版", items:[
+      ["Drag Light to +45 and hold Compare","把“光线”拖到 +45，并按住“对比”","Holding shows the original; release returns the edit","按住时显示原图，松开恢复编辑效果"],
+      ["Open Auto and pick Vivid","打开“自动”并选择“鲜艳”","One step is added; sliders in Adjust reflect it","增加一个步骤；“调整”里的滑块随之变化"],
+      ["Type “make it pop” and press Enter","输入“make it pop”并回车","A plan chip appears; nothing changes until Apply","出现规划提示；点“应用”前画面不变"],
+      ["Apply the Film look and set strength to 60%","应用“胶片”风格并把强度设为 60%","Thumbnail ticks Film; strength reads 60%","缩略图勾选“胶片”；强度显示 60%"],
+      ["Retouch › Erase: paint over a small object","修饰 › 擦除：涂抹一个小物体","It disappears in about 2 s with no obvious seam","约 2 秒后消失，没有明显接缝"],
+      ["Markup: add an arrow and text, then move the arrow","标注：添加箭头和文字，再移动箭头","Both stay editable; one step per action","两者都可再编辑；每个操作一个步骤"],
+      ["Steps: tap an earlier step","步骤：点击更早的一步","The photo returns to that point","照片回到那一步的状态"],
+      ["Export JPEG with Under 500 KB","以“500 KB 以内”导出 JPEG","The file saved is at most 500 KB","保存的文件不超过 500 KB"]
+    ]},
+    {en:"Pro", zh:"专业版", items:[
+      ["File › Open a PSD with groups and masks","文件 › 打开含组和蒙版的 PSD","Layers panel shows the same tree as Photoshop","图层面板显示与 Photoshop 相同的结构"],
+      ["Layer › New Adjustment Layer › Curves, drag a point","图层 › 新建调整图层 › 曲线，拖动控制点","Image updates while dragging; one history step","拖动时画面实时更新；只增加一步历史"],
+      ["Change a layer's blend mode to Multiply and opacity to 50%","把图层混合模式改为正片叠底、不透明度 50%","Canvas matches the change immediately","画布立即反映变化"],
+      ["Filter › Blur › Gaussian Blur, radius 12, OK","滤镜 › 模糊 › 高斯模糊，半径 12，确定","Preview while typing; exactly one history step","输入时有预览；只增加一步历史"],
+      ["Convert for Smart Filters, add Median, toggle its eye","转换为智能滤镜，添加中间值，切换其可见性","Effect turns off and on without losing pixels","效果可关可开，像素不受损失"],
+      ["Double-click a layer, add Drop Shadow and Stroke","双击图层，添加投影和描边","Shadow and stroke render; Cancel removes them","投影和描边正常显示；取消后移除"],
+      ["Cmd/Ctrl+T on a layer, scale by corner, Enter","对图层按 Cmd/Ctrl+T，拖角缩放，回车","Layer scales; one Free Transform step","图层被缩放；增加一步“自由变换”"],
+      ["Image › Image Size to 1200 px wide, then click the step before in History","图像 › 图像大小改为宽 1200 像素，再在历史记录中点前一步","Size returns to the original","尺寸恢复为原始大小"],
+      ["File › Save as PSD, reopen the saved file","文件 › 存储为 PSD，再打开保存的文件","Same layers, names and blend modes","图层、名称和混合模式都一致"]
+    ]},
+    {en:"Raw and AI", zh:"RAW 与 AI", items:[
+      ["Open a .NEF, .CR3, .ARW or .RAF","打开 .NEF、.CR3、.ARW 或 .RAF 文件","Camera Raw dialog with camera and lens line; preview within ~2 s","出现 Camera Raw 对话框，显示机身和镜头信息；约 2 秒内出预览"],
+      ["Raise Exposure by 1 and open","把曝光提高 1 档并打开","Opened image is brighter than the as-shot preview","打开后的图像比原始预览更亮"],
+      ["Select › Subject on a portrait","选择 › 主体（在人像上）","Marching ants around the person, hair included","人物周围出现选区蚂蚁线，头发也包含在内"],
+      ["Remove background on a product photo","在商品照片上去除背景","Transparent checkerboard behind the object","物体背后显示透明棋盘格"],
+      ["Upscale 2× a small photo","把一张小照片放大 2 倍","Document doubles in size, edges stay sharp","文档尺寸翻倍，边缘保持清晰"],
+      ["Disconnect from the network, reload, repeat one AI action","断开网络，刷新页面，再做一次 AI 操作","Still works: models are cached on the device","仍然可用：模型已缓存在本机"]
+    ]}
+  ];
+  var KEY="ops-guide-checks";
+  var state={}; try{state=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){state={}}
+  var box=document.getElementById("checks"), total=0;
+  SECTIONS.forEach(function(sec,si){
+    var fs=document.createElement("fieldset");
+    fs.innerHTML='<legend><span data-l="en">'+sec.en+'</span><span data-l="zh">'+sec.zh+'</span></legend>';
+    sec.items.forEach(function(it,ii){
+      var id="c-"+si+"-"+ii; total++;
+      var lab=document.createElement("label"); lab.className="check"; lab.htmlFor=id;
+      lab.innerHTML='<input type="checkbox" id="'+id+'"><span class="txt"><span data-l="en">'+it[0]+'</span><span data-l="zh">'+it[1]+'</span><span class="exp"><span data-l="en">Expect: '+it[2]+'</span><span data-l="zh">预期：'+it[3]+'</span></span></span>';
+      var input=lab.querySelector("input"); input.checked=!!state[id];
+      input.onchange=function(){state[id]=input.checked; save(); update();};
+      fs.appendChild(lab);
+    });
+    box.appendChild(fs);
+  });
+  function save(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}}
+  function update(){
+    var n=Object.keys(state).filter(function(k){return state[k]}).length;
+    document.getElementById("count").textContent=n+" / "+total;
+    document.getElementById("bar").style.width=(total?100*n/total:0)+"%";
+  }
+  document.getElementById("reset").onclick=function(){state={}; save(); box.querySelectorAll("input").forEach(function(i){i.checked=false}); update();};
+  update();
+})();
+</script>
