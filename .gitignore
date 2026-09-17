@@ -11,3 +11,6 @@ playwright-report/
 .DS_Store
 dist-app/
 apps/web/e2e/local/
+
+.claude/
+*.log
