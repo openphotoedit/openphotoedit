@@ -10,4 +10,4 @@ playwright-report/
 *.part
 .DS_Store
 dist-app/
-e2e/local/
+apps/web/e2e/local/

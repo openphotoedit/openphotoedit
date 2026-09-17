@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RAW harness</title>
+    <style>
+      body { margin: 0; font: 13px system-ui, sans-serif; background: #1e1e1e; color: #ddd; }
+      #row { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+      canvas { max-width: 900px; height: auto; display: block; }
+      pre { white-space: pre-wrap; max-width: 420px; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Drives the real worker, wasm engine, raw-io opener and Camera Raw
+         dialog. See apps/web/e2e/raw.mjs. -->
+    <div id="row"><canvas id="doc"></canvas><pre id="info"></pre></div>
+    <script type="module">
+      import "/src/styles/app.css";
+      document.documentElement.classList.add("oa-dark");
+      import { editor } from "/src/lib/editor.svelte.ts";
+      import { openers } from "/src/lib/io.ts";
+      import { installRawIo } from "/src/lib/raw-io.ts";
+
+      window.rawHarness = {
+        async init() {
+          await editor.init();
+          installRawIo();
+        },
+        /** Starts opening; the dialog appears and the test drives it. Resolves when opening finishes. */
+        open(name, bytes) {
+          const ext = name.split(".").pop().toLowerCase();
+          const started = performance.now();
+          window.rawHarness.result = openers[ext](new File([bytes], name)).then(async (ok) => {
+            const ms = Math.round(performance.now() - started);
+            if (!ok) return { ok, toasts: editor.toasts.map((t) => t.text) };
+            const s = editor.summary;
+            const rgba = await editor.engine.call("flatten");
+            const c = document.getElementById("doc");
+            c.width = s.width;
+            c.height = s.height;
+            c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), s.width, s.height), 0, 0);
+            document.getElementById("info").textContent = `${name}\n${s.width}×${s.height}, ${s.layers.length} layer(s)`;
+            return { ok, width: s.width, height: s.height, layers: s.layers.length, ms };
+          });
+          return true;
+        },
+      };
+      window.rawHarnessReady = true;
+    </script>
+  </body>
+</html>

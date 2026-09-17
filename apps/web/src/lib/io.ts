@@ -2,7 +2,7 @@
 
 import { editor } from "./editor.svelte";
 
-export const IMAGE_ACCEPT = "image/*,.psd,.psb,.heic,.heif,.avif,.jxl,.tif,.tiff";
+export const IMAGE_ACCEPT = "image/*,.psd,.psb,.opproj,.heic,.heif,.avif,.jxl,.tif,.tiff,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.dng,.pef,.srw";
 
 export interface Decoded {
   width: number;

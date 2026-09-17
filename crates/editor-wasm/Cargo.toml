@@ -16,6 +16,7 @@ editor-transform.workspace = true
 editor-project.workspace = true
 editor-psd.workspace = true
 editor-ai.workspace = true
+editor-raw.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true

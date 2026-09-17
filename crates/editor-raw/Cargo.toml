@@ -1,0 +1,17 @@
+[package]
+name = "editor-raw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camera RAW decode and develop for OpenPhotoshop"
+
+[dependencies]
+# Vendored with a wasm fix; see vendor/README.md.
+rawler = { path = "vendor/rawler" }
+serde.workspace = true
+serde_json.workspace = true
+rayon = "1"
+
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

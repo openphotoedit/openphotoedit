@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "migan",
+      "file": "migan_pipeline_v2.onnx",
+      "url": "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx",
+      "sha256": "6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b",
+      "size": 28079181,
+      "license": "MIT (code and weights)",
+      "attribution": "MI-GAN, Picsart AI Research (Sargsyan et al., ICCV 2023)",
+      "features": [
+        "remove-object"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "lama",
+      "file": "lama_fp32.onnx",
+      "url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx",
+      "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+      "size": 208044816,
+      "license": "Apache-2.0",
+      "attribution": "LaMa (Suvorov et al., WACV 2022), ONNX port by Carve",
+      "features": [
+        "remove-object"
+      ],
+      "tier": 2,
+      "grey_zone": "Trained on Places2, whose image terms are unverified"
+    },
+    {
+      "id": "modnet",
+      "file": "modnet_photographic_portrait_matting.onnx",
+      "url": "https://github.com/Zeyi-Lin/HivisionIDPhotos/releases/download/pretrained-model/modnet_photographic_portrait_matting.onnx",
+      "sha256": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+      "size": 25888640,
+      "license": "Apache-2.0",
+      "attribution": "MODNet (Ke et al., AAAI 2022), weights via HivisionIDPhotos",
+      "features": [
+        "select-subject",
+        "remove-background",
+        "blur-background"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "u2netp",
+      "file": "u2netp.onnx",
+      "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+      "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+      "size": 4574861,
+      "license": "Apache-2.0",
+      "attribution": "U²-Net (Qin et al., 2020), rembg release",
+      "features": [
+        "select-subject",
+        "remove-background",
+        "blur-background",
+        "analyze-scene"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "edgetam-encoder",
+      "file": "edgetam/vision_encoder.onnx",
+      "url": "https://huggingface.co/onnx-community/EdgeTAM-ONNX/resolve/main/onnx/vision_encoder.onnx",
+      "sha256": "ed068218eba96760fe02d04ce899c449660ac813a088d80ed7f42c8bb01e7cec",
+      "size": 192225,
+      "license": "Apache-2.0",
+      "attribution": "EdgeTAM, Meta (Zhou et al., CVPR 2025), ONNX by onnx-community",
+      "features": [
+        "select-object",
+        "select-subject"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "edgetam-encoder.data",
+      "file": "edgetam/vision_encoder.onnx_data",
+      "url": "https://huggingface.co/onnx-community/EdgeTAM-ONNX/resolve/main/onnx/vision_encoder.onnx_data",
+      "sha256": "21e75dba7077dfcb53e8c9a6e99977156f2240ff3f1f9cddc43d66aa1ecb528e",
+      "size": 19532576,
+      "license": "Apache-2.0",
+      "attribution": "EdgeTAM, Meta (Zhou et al., CVPR 2025), ONNX by onnx-community",
+      "features": [
+        "select-object",
+        "select-subject"
+      ],
+      "tier": 1,
+      "part_of": "edgetam-encoder"
+    },
+    {
+      "id": "edgetam-decoder",
+      "file": "edgetam/prompt_encoder_mask_decoder.onnx",
+      "url": "https://huggingface.co/onnx-community/EdgeTAM-ONNX/resolve/main/onnx/prompt_encoder_mask_decoder.onnx",
+      "sha256": "d3668299ec3edf70fbb139ec642b54bf3d4be453fd1b688a6b5938e0856fe546",
+      "size": 213114,
+      "license": "Apache-2.0",
+      "attribution": "EdgeTAM, Meta (Zhou et al., CVPR 2025), ONNX by onnx-community",
+      "features": [
+        "select-object",
+        "select-subject"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "edgetam-decoder.data",
+      "file": "edgetam/prompt_encoder_mask_decoder.onnx_data",
+      "url": "https://huggingface.co/onnx-community/EdgeTAM-ONNX/resolve/main/onnx/prompt_encoder_mask_decoder.onnx_data",
+      "sha256": "dfa2125e30d08d388732f20c18fb63ab0f0f590cd270eb307f0c2b65919d1be8",
+      "size": 20958208,
+      "license": "Apache-2.0",
+      "attribution": "EdgeTAM, Meta (Zhou et al., CVPR 2025), ONNX by onnx-community",
+      "features": [
+        "select-object",
+        "select-subject"
+      ],
+      "tier": 1,
+      "part_of": "edgetam-decoder"
+    },
+    {
+      "id": "yunet",
+      "file": "face_detection_yunet_2023mar.onnx",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "size": 232589,
+      "license": "MIT",
+      "attribution": "YuNet (Wu et al.), OpenCV Zoo",
+      "features": [
+        "detect-faces",
+        "restore-faces",
+        "analyze-scene",
+        "red-eye"
+      ],
+      "tier": 1
+    },
+    {
+      "id": "realesr-x4v3",
+      "file": "realesr_general_x4v3.onnx",
+      "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
+      "sha256": "0e121299bf9b23a764d3f9e2120d0d0727d5ac5032e03a46cb78d28bcc7c6872",
+      "size": 4866422,
+      "license": "BSD-3-Clause",
+      "attribution": "Real-ESRGAN (Wang et al., 2021), exported by OpenPixels",
+      "features": [
+        "upscale",
+        "jpeg-artifacts",
+        "denoise"
+      ],
+      "tier": 1,
+      "exported": true,
+      "note": "url is the PyTorch source; the served ONNX is exported by openpixels/scripts/export-models.py and pinned by sha256"
+    },
+    {
+      "id": "realesr-x4v3-dn50",
+      "file": "realesr_general_x4v3_dn50.onnx",
+      "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth",
+      "sha256": "b345bc59c38dbb78d871b5adf9519c475fe243c198f70cc9d0b97a464715d50b",
+      "size": 4866422,
+      "license": "BSD-3-Clause",
+      "attribution": "Real-ESRGAN (Wang et al., 2021); 50/50 blend of the wdn and general weights, exported by OpenPixels",
+      "features": [
+        "denoise"
+      ],
+      "tier": 1,
+      "exported": true,
+      "note": "url is the PyTorch source; the served ONNX is exported by openpixels/scripts/export-models.py and pinned by sha256"
+    },
+    {
+      "id": "realesr-x4v3-wdn",
+      "file": "realesr_general_wdn_x4v3.onnx",
+      "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth",
+      "sha256": "be536211515f088de05f1aa799a8079e92f49978b47aad6cec007f9fca62bb68",
+      "size": 4866422,
+      "license": "BSD-3-Clause",
+      "attribution": "Real-ESRGAN (Wang et al., 2021), exported by OpenPixels",
+      "features": [
+        "denoise"
+      ],
+      "tier": 1,
+      "exported": true,
+      "note": "url is the PyTorch source; the served ONNX is exported by openpixels/scripts/export-models.py and pinned by sha256"
+    },
+    {
+      "id": "realesrgan-x4plus",
+      "file": "realesrgan_x4plus.onnx",
+      "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+      "sha256": "800a80063abcc8db53f6579407347ac2d53a9f5697dcc839cff38fbd806faf37",
+      "size": 67051644,
+      "license": "BSD-3-Clause",
+      "attribution": "Real-ESRGAN (Wang et al., 2021), exported by OpenPixels",
+      "features": [
+        "upscale"
+      ],
+      "tier": 2,
+      "exported": true,
+      "note": "url is the PyTorch source; the served ONNX is exported by openpixels/scripts/export-models.py and pinned by sha256"
+    },
+    {
+      "id": "gfpgan",
+      "file": "gfpgan_1.4.onnx",
+      "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/gfpgan_1.4.onnx",
+      "sha256": "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385",
+      "size": 340299087,
+      "license": "Apache-2.0",
+      "attribution": "GFPGAN v1.4 (Wang et al., CVPR 2021), ONNX via facefusion",
+      "features": [
+        "restore-faces"
+      ],
+      "tier": 2,
+      "grey_zone": "Trained on FFHQ (CC BY-NC-SA images); the repo licence says Apache-2.0 except third-party components"
+    },
+    {
+      "id": "deoldify",
+      "file": "deoldify_artistic.onnx",
+      "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/deoldify_artistic.onnx",
+      "sha256": "9ac296cf05fecbdb604f50211f632b722402bc1f9a96ee5a8987b01c0c3c688f",
+      "size": 255044725,
+      "license": "MIT",
+      "attribution": "DeOldify (Jason Antic), artistic model, ONNX via facefusion",
+      "features": [
+        "colorize"
+      ],
+      "tier": 2
+    }
+  ]
+}
