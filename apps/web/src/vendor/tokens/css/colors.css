@@ -183,7 +183,7 @@
      light ground it deepens toward brass rather than being used raw. As a fill
      it takes black glyphs at 7.48:1, not white at 2.81:1. */
   --olive:color-mix(in oklab,var(--brass) 57%,var(--yellow) 43%);
-  /* Slot 24, iris: minted 14 Sep 2026 for openphotoshop. The ring had no
+  /* Slot 24, iris: minted 14 Sep 2026 for openphotoedit. The ring had no
      room at full chroma; violet deepened by ink lands 13.4 dE from its nearest
      slot (violet) and 20.1 from every result colour. See ACCENT-SLOTS.md. */
   --iris:color-mix(in oklab,var(--violet) 56%,var(--ink));

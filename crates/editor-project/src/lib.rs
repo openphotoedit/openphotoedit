@@ -34,15 +34,17 @@ pub use zip::{ZipReader, ZipWriter};
 
 /// The format version this code writes and fully understands.
 pub const VERSION: u32 = 1;
-pub const FORMAT: &str = "openphotoshop-project";
+pub const FORMAT: &str = "openphotoedit-project";
+/// The name written before the 17 September 2026 rename. Still read.
+pub const LEGACY_FORMAT: &str = "openphotoshop-project";
 pub const EXTENSION: &str = "opproj";
-pub const MIME: &str = "application/vnd.openphotoshop.project+zip";
+pub const MIME: &str = "application/vnd.openphotoedit.project+zip";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("this is not an OpenPhotoshop project")]
+    #[error("this is not an OpenPhotoEdit project")]
     NotProject,
-    #[error("this project was made by a newer version of OpenPhotoshop (format {0}); update to open it")]
+    #[error("this project was made by a newer version of OpenPhotoEdit (format {0}); update to open it")]
     TooNew(u32),
     #[error("the project is damaged: {0}")]
     Corrupt(&'static str),
@@ -366,7 +368,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, Error> {
     let mut saver = Saver { planes: Vec::new(), seen: Default::default() };
     let mut files = Vec::new();
     let document = saver.doc(doc, &mut files, "");
-    let manifest = Manifest { format: FORMAT.into(), version: VERSION, min_reader: 1, generator: format!("OpenPhotoshop {}", env!("CARGO_PKG_VERSION")), document };
+    let manifest = Manifest { format: FORMAT.into(), version: VERSION, min_reader: 1, generator: format!("OpenPhotoEdit {}", env!("CARGO_PKG_VERSION")), document };
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut z = ZipWriter::new();
     // First entry, stored, so the archive's start identifies the format.
@@ -496,7 +498,7 @@ pub fn load(bytes: &[u8], opts: &LoadOptions) -> Result<Loaded, Error> {
     let zip = ZipReader::open(bytes)?;
     let json = zip.read("manifest.json", 256_000_000)?.ok_or(Error::NotProject)?;
     let manifest: Manifest = serde_json::from_slice(&json).map_err(|e| Error::Invalid(format!("manifest: {e}")))?;
-    if manifest.format != FORMAT {
+    if manifest.format != FORMAT && manifest.format != LEGACY_FORMAT {
         return Err(Error::NotProject);
     }
     if manifest.min_reader > VERSION {

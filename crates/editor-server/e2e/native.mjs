@@ -1,8 +1,8 @@
-// End-to-end: the real `openphotoshop` binary, a real browser, a real photo.
+// End-to-end: the real `openphotoedit` binary, a real browser, a real photo.
 //
 //   node crates/editor-server/e2e/native.mjs [binary] [photo] [out.png]
 //
-// Starts `openphotoshop open <photo> --port 5216 --no-open`, then checks in
+// Starts `openphotoedit open <photo> --port 5216 --no-open`, then checks in
 // Chromium that the page is cross-origin isolated, the wasm engine starts
 // with no console errors, /api/health reports the native backend, the
 // one-time file token works exactly once, and a photo opens in Lite. Ends
@@ -20,7 +20,7 @@ const repo = resolve(here, "../../..");
 const require = createRequire(resolve(repo, "apps/web/package.json"));
 const { chromium } = require("playwright");
 
-const bin = resolve(process.argv[2] ?? `${repo}/target/server/release/openphotoshop`);
+const bin = resolve(process.argv[2] ?? `${repo}/target/server/release/openphotoedit`);
 const photo = resolve(process.argv[3] ?? `${repo}/testdata/photos/portrait.jpg`);
 const out = resolve(process.argv[4] ?? `${repo}/target/server/out/native-e2e.png`);
 const PORT = 5216;
@@ -71,7 +71,7 @@ await page.goto(base);
 check(await page.evaluate(() => crossOriginIsolated), "page is cross-origin isolated (COOP/COEP)");
 
 const health = await page.evaluate(async () => (await fetch("/api/health")).json());
-check(health.app === "openphotoshop" && health.native === true && health.web === "embedded", `health: ${JSON.stringify(health)}`);
+check(health.app === "openphotoedit" && health.native === true && health.web === "embedded", `health: ${JSON.stringify(health)}`);
 
 const size = statSync(photo).size;
 const handoff = await page.evaluate(async (t) => {

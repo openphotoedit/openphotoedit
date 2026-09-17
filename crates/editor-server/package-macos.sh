@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build OpenPhotoshop as one thing a person downloads and double-clicks.
+# Build OpenPhotoEdit as one thing a person downloads and double-clicks.
 #
-#   crates/editor-server/package-macos.sh        -> dist-app/OpenPhotoshop.app
+#   crates/editor-server/package-macos.sh        -> dist-app/OpenPhotoEdit.app
 #
 # The web app is embedded in the binary at compile time, so it is built first:
 # a stale apps/web/dist would be baked in silently. Nothing is signed or
@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 cd "$REPO"
 
-APP_NAME="OpenPhotoshop"
+APP_NAME="OpenPhotoEdit"
 OUT="$REPO/dist-app"
 BUNDLE="$OUT/$APP_NAME.app"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/server}"
@@ -29,7 +29,7 @@ fi
 
 echo "2/4  Building the binary"
 cargo build --release -p editor-server -q
-BIN="$CARGO_TARGET_DIR/release/openphotoshop"
+BIN="$CARGO_TARGET_DIR/release/openphotoedit"
 # A placeholder page means the embed did not pick up the build; refuse to ship that.
 if strings "$BIN" | grep -q "This build has no web app inside"; then
   echo "the binary embedded the placeholder page, not apps/web/dist" >&2
@@ -69,7 +69,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
-  <key>CFBundleIdentifier</key><string>com.openphotoshop.desktop</string>
+  <key>CFBundleIdentifier</key><string>com.openphotoedit.desktop</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>

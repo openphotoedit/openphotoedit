@@ -1,4 +1,4 @@
-//! `openphotoshop render`: the engine, natively, from the command line.
+//! `openphotoedit render`: the engine, natively, from the command line.
 //!
 //! Decode an image, open it as a document with `doc.open-pixels`, run JSON
 //! commands exactly as the UI sends them to the wasm worker, flatten, write a

@@ -1,4 +1,4 @@
-//! OpenPhotoshop's editing engine.
+//! OpenPhotoEdit's editing engine.
 //!
 //! Pure Rust with no I/O: the same code runs as WebAssembly in a browser
 //! worker and natively in the local server. A document is a tree of layers

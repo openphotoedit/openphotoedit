@@ -1,6 +1,6 @@
 # Adobe Photoshop teardown (desktop 27.x, web, iPad/mobile, Camera Raw 18.x)
 
-Research for OpenPhotoshop. Compiled 2026-09-14. Current shipping versions at time of writing: **Photoshop 27.10** (released 2026-08-28) and **Camera Raw 18.6** (late August 2026).
+Research for OpenPhotoEdit. Compiled 2026-09-14. Current shipping versions at time of writing: **Photoshop 27.10** (released 2026-08-28) and **Camera Raw 18.6** (late August 2026).
 
 ## Summary
 
@@ -15,7 +15,7 @@ Research for OpenPhotoshop. Compiled 2026-09-14. Current shipping versions at ti
 - **Pixel pipeline:** 16-bit, ICC colour management with soft proofing, and Camera Raw for raw files.
 - **Files:** PSD/PSB round-trip fidelity, plus Actions and Batch processing.
 
-**Adobe's AI features sit behind server calls, credits and an account.** These are OpenPhotoshop's differentiation seams:
+**Adobe's AI features sit behind server calls, credits and an account.** These are OpenPhotoEdit's differentiation seams:
 
 - **Behind servers and credits:**
   - **Generative:** Generative Fill, Expand, Generate Image, Generate Background and Generate Similar.

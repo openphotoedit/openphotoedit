@@ -3,7 +3,7 @@ name = "editor-raw"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Camera RAW decode and develop for OpenPhotoshop"
+description = "Camera RAW decode and develop for OpenPhotoEdit"
 
 [dependencies]
 # Vendored with a wasm fix; see vendor/README.md.

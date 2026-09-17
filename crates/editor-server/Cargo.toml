@@ -1,6 +1,6 @@
 [package]
 name = "editor-server"
-description = "OpenPhotoshop as one local program: the web app, its models and the native engine on a single loopback port"
+description = "OpenPhotoEdit as one local program: the web app, its models and the native engine on a single loopback port"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ name = "editor_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "openphotoshop"
+name = "openphotoedit"
 path = "src/main.rs"
 
 [features]

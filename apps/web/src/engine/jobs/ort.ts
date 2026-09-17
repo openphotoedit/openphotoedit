@@ -84,7 +84,7 @@ export async function runtimeInfo(baseUrl: string) {
 // ---------------------------------------------------------------------------
 // Verdicts: which backend failed the canary for which model, on this device.
 
-const VERDICTS = "openphotoshop-ai-verdicts-v1";
+const VERDICTS = "openphotoedit-ai-verdicts-v1";
 const VERDICT_URL = "https://verdicts.invalid/ai";
 let verdicts: Record<string, { ok: boolean; deviation?: number; at: string }> | null = null;
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1
-// Local change (OpenPhotoshop): `std::time::Instant::now()` panics on
+// Local change (OpenPhotoEdit): `std::time::Instant::now()` panics on
 // wasm32-unknown-unknown ("time not implemented on this platform"). rawler only
 // uses it for debug timing logs, so on that target it becomes a no-op clock.
 

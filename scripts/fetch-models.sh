@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Puts every model OpenPhotoshop serves into .vendor/models/ (sha256-pinned),
+# Puts every model OpenPhotoEdit serves into .vendor/models/ (sha256-pinned),
 # links them into apps/web/public/models/ for Vite, and copies the
 # onnxruntime-web runtime into apps/web/public/ort/. Nothing is fetched from
 # a third party at run time; this script is the only thing that downloads.

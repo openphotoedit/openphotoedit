@@ -512,7 +512,7 @@ def({ id: "window.dock", label: t("Show Panels"), shortcut: "Tab", run: () => ((
 
 // Help
 def({ id: "help.shortcuts", label: t("Keyboard Shortcuts"), run: () => pro.open({ kind: "shortcuts" }) });
-def({ id: "help.about", label: t("About OpenPhotoshop"), run: () => pro.open({ kind: "about" }) });
+def({ id: "help.about", label: t("About OpenPhotoEdit"), run: () => pro.open({ kind: "about" }) });
 def({ id: "help.simple", label: t("Switch to Simple Mode"), run: () => editor.setProfile("lite") });
 
 // ---------------------------------------------------------------------------

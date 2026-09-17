@@ -1,4 +1,4 @@
-//! Camera RAW for OpenPhotoshop: decode (via rawler), demosaic, colour and a
+//! Camera RAW for OpenPhotoEdit: decode (via rawler), demosaic, colour and a
 //! Camera-Raw-style develop stage, all in f32 linear light, ending in 8-bit
 //! sRGB for the document.
 //!

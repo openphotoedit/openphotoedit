@@ -7,14 +7,14 @@
 //! missing we embed a one-page placeholder that says how to fix it, and the
 //! binary reports `embedded: "placeholder"` in `/api/health`.
 //!
-//! `OPENPHOTOSHOP_WEB_DIST` points at a different build if you need one.
+//! `OPENPHOTOEDIT_WEB_DIST` points at a different build if you need one.
 
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=OPENPHOTOSHOP_WEB_DIST");
+    println!("cargo:rerun-if-env-changed=OPENPHOTOEDIT_WEB_DIST");
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let dist = match std::env::var("OPENPHOTOSHOP_WEB_DIST") {
+    let dist = match std::env::var("OPENPHOTOEDIT_WEB_DIST") {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
         _ => manifest.join("../../apps/web/dist"),
     };
@@ -35,8 +35,8 @@ fn main() {
         );
         (out, true)
     };
-    println!("cargo:rustc-env=OPENPHOTOSHOP_EMBED_DIR={}", folder.display());
-    println!("cargo:rustc-env=OPENPHOTOSHOP_EMBED_PLACEHOLDER={}", if placeholder { "1" } else { "0" });
+    println!("cargo:rustc-env=OPENPHOTOEDIT_EMBED_DIR={}", folder.display());
+    println!("cargo:rustc-env=OPENPHOTOEDIT_EMBED_PLACEHOLDER={}", if placeholder { "1" } else { "0" });
 }
 
 const PLACEHOLDER: &str = r#"<!doctype html>
@@ -44,7 +44,7 @@ const PLACEHOLDER: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenPhotoshop</title>
+<title>OpenPhotoEdit</title>
 <style>
   body { font: 15px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; background: #fafafa; }
   code { background: #eee; padding: 0.1rem 0.3rem; border-radius: 4px; }
@@ -54,7 +54,7 @@ const PLACEHOLDER: &str = r#"<!doctype html>
 <body>
 <h1>This build has no web app inside</h1>
 <p>The server is running, but it was compiled before the web app was built, so there is nothing to show.</p>
-<p>Build the web app with <code>npm run build</code> in <code>apps/web</code>, then rebuild the binary. Or run <code>openphotoshop serve --dir apps/web/dist</code> to serve a build from disk.</p>
+<p>Build the web app with <code>npm run build</code> in <code>apps/web</code>, then rebuild the binary. Or run <code>openphotoedit serve --dir apps/web/dist</code> to serve a build from disk.</p>
 </body>
 </html>
 "#;

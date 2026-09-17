@@ -212,7 +212,7 @@ export function formatSize(bytes: number): string {
   return bytes >= MB ? `${Math.round(bytes / MB)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-const CACHE = "openphotoshop-models-v1";
+const CACHE = "openphotoedit-models-v1";
 
 let base: string | null = null;
 

@@ -1,6 +1,6 @@
 # 03 — Open-source landscape and the Rust ecosystem
 
-Research for OpenPhotoshop: a locally-run, open-source photo editor with a Rust core (WebAssembly in the browser, native via Tauri or a local server), Lite and Pro profiles, aiming at Photoshop's feature set over time.
+Research for OpenPhotoEdit: a locally-run, open-source photo editor with a Rust core (WebAssembly in the browser, native via Tauri or a local server), Lite and Pro profiles, aiming at Photoshop's feature set over time.
 
 Snapshot date: **2026-09-14**.
 

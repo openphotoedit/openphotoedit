@@ -1,11 +1,11 @@
-//! `openphotoshop`: the editor as one local program.
+//! `openphotoedit`: the editor as one local program.
 //!
 //! ```text
-//! openphotoshop                          same as `serve`
-//! openphotoshop serve [--port N] [--no-open] [--dir PATH] [--models-dir PATH]
-//! openphotoshop open <file> [same flags]  serve, and hand <file> to the UI once
-//! openphotoshop models path|list|fetch <id>… [--all] [--manifest PATH]
-//! openphotoshop render <in> --op '<json>' [--op …] --out <out.png>
+//! openphotoedit                          same as `serve`
+//! openphotoedit serve [--port N] [--no-open] [--dir PATH] [--models-dir PATH]
+//! openphotoedit open <file> [same flags]  serve, and hand <file> to the UI once
+//! openphotoedit models path|list|fetch <id>… [--all] [--manifest PATH]
+//! openphotoedit render <in> --op '<json>' [--op …] --out <out.png>
 //! ```
 
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ use editor_server::server::{self, AppState};
 use editor_server::web::WebSource;
 
 #[derive(Parser)]
-#[command(name = "openphotoshop", version, about = "OpenPhotoshop, served from this computer", propagate_version = true)]
+#[command(name = "openphotoedit", version, about = "OpenPhotoEdit, served from this computer", propagate_version = true)]
 struct Cli {
     /// More log output on stderr (-v requests, -vv debug).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let msg = format!("{e:#}");
-            eprintln!("openphotoshop: {msg}");
+            eprintln!("openphotoedit: {msg}");
             if launched_bare {
                 // Double-clicked: there is no terminal to read the error in.
                 report_visibly(&msg);
@@ -192,7 +192,7 @@ async fn serve(args: ServeArgs, open_file: Option<PathBuf>) -> Result<()> {
         let token = state.tokens.issue(path);
         url.push_str(&format!("?open={token}"));
     }
-    println!("OpenPhotoshop is running at http://{addr}/");
+    println!("OpenPhotoEdit is running at http://{addr}/");
     println!("Models folder: {}", models_dir.display());
     println!("Press Ctrl-C to stop.");
     if args.no_open {
@@ -237,11 +237,11 @@ async fn models_cmd(command: ModelsCommand, manifest: Option<PathBuf>, models_di
                 m.models.iter().collect()
             } else {
                 if ids.is_empty() {
-                    bail!("name a model to fetch, or pass --all. `openphotoshop models list` shows them.");
+                    bail!("name a model to fetch, or pass --all. `openphotoedit models list` shows them.");
                 }
                 ids.iter().map(|id| m.find(id).with_context(|| format!("no model {id:?} in {source}"))).collect::<Result<_>>()?
             };
-            let client = reqwest::Client::builder().user_agent(concat!("openphotoshop/", env!("CARGO_PKG_VERSION"))).build()?;
+            let client = reqwest::Client::builder().user_agent(concat!("openphotoedit/", env!("CARGO_PKG_VERSION"))).build()?;
             let progress = std::io::IsTerminal::is_terminal(&std::io::stderr());
             let mut failed = 0;
             for e in wanted {
@@ -286,7 +286,7 @@ fn open_browser(url: &str) {
 fn report_visibly(message: &str) {
     #[cfg(target_os = "macos")]
     {
-        let script = format!("display dialog {message:?} with title \"OpenPhotoshop\" buttons {{\"OK\"}} default button 1 with icon caution");
+        let script = format!("display dialog {message:?} with title \"OpenPhotoEdit\" buttons {{\"OK\"}} default button 1 with icon caution");
         let _ = std::process::Command::new("osascript").args(["-e", &script]).status();
     }
     #[cfg(not(target_os = "macos"))]

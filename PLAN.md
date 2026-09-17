@@ -1,4 +1,4 @@
-# OpenPhotoshop — plan
+# OpenPhotoEdit — plan
 
 Status: **research complete, no code yet** (2026-09-14).
 
@@ -57,7 +57,7 @@ Status: **research complete, no code yet** (2026-09-14).
 
 **What "Rust backend, locally run" means here.** The editing engine is Rust everywhere.
 - **In the browser** it is compiled to wasm and runs in a worker.
-- **As the local backend** it is one native binary: `openphotoshop serve` opens the browser at `http://127.0.0.1:<port>`.
+- **As the local backend** it is one native binary: `openphotoedit serve` opens the browser at `http://127.0.0.1:<port>`.
   - The UI and engine share an origin, which avoids the mixed-content, CORS and Private Network Access problems OpenDownloader documented.
   - The UI detects the native engine and unlocks tier-3 AI and unlimited document size.
 
@@ -247,9 +247,14 @@ The "Later" rows in the matrix, 58 of them, include:
 
 ## 5. Open decisions (need Darius)
 
-1. **Name.**
-   - "OpenPhotoshop" uses Adobe's registered mark. That invites a GitHub DMCA/trademark takedown, store rejection and a UDRP (domain dispute) challenge.
-   - Recommendation: keep `openphotoshop/` as the working folder and run `openapps-product-name` for the public name before the first push.
+1. **Name — settled 17 September 2026: OpenPhotoEdit.** The earlier
+   working name, "OpenPhotoshop", used Adobe's registered mark and invited a
+   GitHub DMCA/trademark takedown, a store rejection and a UDRP challenge; the
+   new name carries none of that. The folder, the binary, crate metadata, the
+   `.opproj` format string (the old one is still read) and the accent-slot
+   registry row all moved with it. The internal `ops-` CSS prefix and the
+   `ops.*` storage keys stayed: they are invisible, and renaming 470 call
+   sites buys nothing. Still to do: the domain and the GitHub account.
 2. **Licence.**
    - Recommendation: **AGPL-3.0-or-later** for the app, as OpenCapture uses. It lets us use `rawler`, `libheif` and darktable/RawTherapee maths.
    - Publish `editor-psd` and `editor-tiles` as **MIT/Apache** to attract contributors.

@@ -27,7 +27,7 @@ impl Fixture {
     }
 }
 
-const INDEX: &str = "<!doctype html><title>OpenPhotoshop test shell</title>";
+const INDEX: &str = "<!doctype html><title>OpenPhotoEdit test shell</title>";
 const SECRET: &str = "TOP-SECRET-CONTENTS";
 
 async fn start() -> Fixture {
@@ -83,7 +83,7 @@ async fn health_identifies_the_native_backend() {
     assert_eq!(r.status(), 200);
     assert!(h(&r, "content-type").starts_with("application/json"));
     let v: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(v["app"], "openphotoshop");
+    assert_eq!(v["app"], "openphotoedit");
     assert_eq!(v["native"], true);
     assert_eq!(v["api"], 1);
     assert_eq!(v["web"], "dir");

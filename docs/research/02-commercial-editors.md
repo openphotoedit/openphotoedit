@@ -1,6 +1,6 @@
 # 02 — Commercial photo editors other than Photoshop
 
-Research date: 2026-09-14. Scope: every leading commercial editor **except** Adobe Photoshop and Adobe Camera Raw (covered in a separate document). The focus is (a) what these products have that Photoshop does not, (b) their AI features, (c) Lite/simple-mode UX ideas, and (d) pricing and business-model seams that OpenPhotoshop, a local-first Rust/wgpu/wasm editor with Lite and Pro profiles, could use.
+Research date: 2026-09-14. Scope: every leading commercial editor **except** Adobe Photoshop and Adobe Camera Raw (covered in a separate document). The focus is (a) what these products have that Photoshop does not, (b) their AI features, (c) Lite/simple-mode UX ideas, and (d) pricing and business-model seams that OpenPhotoEdit, a local-first Rust/wgpu/wasm editor with Lite and Pro profiles, could use.
 
 ## How to read this document
 
@@ -686,7 +686,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 | 129 | Plain-language automation → reusable script | Affinity 3.2 Claude connector | Describe a repetitive job; get a macro | edge | no | yes | cloud (Claude) | M | Reviewers: early, "not a production-ready tool yet" |
 | 130 | Real-time generative canvas | Krea | Image regenerates live while typing or drawing | bloat | no | yes | cloud | XL | — |
 | 131 | Mood boards mixing library and outside images | Lr Firefly Mood Boards | Moodboard with AI edit experiments | bloat | no | yes | cloud | M | — |
-| 132 | Zero-install browser editor, local processing, PSD round-trip | Photopea | Full layered editor in a tab; files stay local | must (for OpenPhotoshop) | yes | no | on-device (browser) | XL | Proves the model: about 1M DAU and $3M/yr |
+| 132 | Zero-install browser editor, local processing, PSD round-trip | Photopea | Full layered editor in a tab; files stay local | must (for OpenPhotoEdit) | yes | no | on-device (browser) | XL | Proves the model: about 1M DAU and $3M/yr |
 | 133 | Embeddable and self-hostable editor | Photopea API and self-host licence | Other sites embed the editor | edge | no | no | on-device | M | Revenue line Photopea has already validated |
 
 **Row count: 133.**
@@ -756,7 +756,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 42. **Text box for edits plus a step-by-step AI edit history** where each change can be reviewed, adjusted or undone.
 43. **Moved objects get matching shadows automatically**, which hides the seam novices can't fix.
 
-### 3.2 Ten best patterns for OpenPhotoshop Lite
+### 3.2 Ten best patterns for OpenPhotoEdit Lite
 
 1. **Auto with alternatives.** Offer 3–4 auto results as thumbnails rather than one opaque Auto (Google).
 2. **Master sliders with disclosure.** Light, Color and B&W, each expanding into sub-sliders; double-click resets; a checkbox toggles each group (Apple).
@@ -773,7 +773,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 
 ## 4. AI-native UX patterns
 
-| Pattern | Who does it | Done well or gimmick (per reviewers) | Local feasibility for OpenPhotoshop |
+| Pattern | Who does it | Done well or gimmick (per reviewers) | Local feasibility for OpenPhotoEdit |
 |---|---|---|---|
 | **Object removal by brush, click or auto-highlight** | Canva Magic Eraser, Apple Clean Up, Google Magic Eraser, Lr Remove, Photopea | **Done well.** The most consistently praised AI tool ("one of the most consistently reliable tools in the suite", fast.io). Complaints are about failures and credits, not the concept | Yes. LaMa-class inpainting is small; diffusion inpainting as the "High Quality" mode |
 | **Prompt edit → re-rendered pixels** | Google Help me edit, Samsung Photo Assist, ChatGPT Images 2.0, Nano Banana, Canva Magic Edit, Photopea Magic Replace | **Mixed.** Great for discoverability and fun transformations. MakeUseOf frames it as a fix for a buried UI. Canva's Magic Edit is "a useful tool for quick fixes, not a Photoshop replacement". Pros avoid it for deliverables | Only on high-VRAM machines (FLUX.2 klein 4B about 13–16 GB; Qwen-Image-Edit and FLUX.2 dev about 24 GB). Offer as optional, BYO-key or local-GPU |
@@ -788,7 +788,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 | **Relighting with direct manipulation** | Luminar Light Depth (sliders, 3D lights), Magnific (3 lights plus reference), Google Portrait light | **Done well now.** Light Depth "worth the upgrade"; its predecessor Relight "didn't work very well" | Yes but XL: depth plus normals plus shading |
 | **Before/after and per-group toggles** | Apple (checkbox per group, double-click reset), Lr/C1 split view, Pixelmator split view | **Essential**; nobody calls it gimmicky | Trivial in a parametric pipeline |
 | **Undoable AI layers / AI edit history** | Samsung (reviewable, adjustable, undoable history); Lr keeps AI edits re-renderable but adds "Flatten AI edits" to save credits and a pre-export "needs AI update" warning | **Done well** (Samsung). Lr shows the cost of cloud AI: re-rendering spends credits and breaks exports | Yes. Local re-render is free, so keep every AI step live |
-| **Cost shown before the action** | Lr (credits under the Animate button), Canva fair-use split | **Good practice** when metered. OpenPhotoshop has no meter, and that absence is itself the message | n/a |
+| **Cost shown before the action** | Lr (credits under the Animate button), Canva fair-use split | **Good practice** when metered. OpenPhotoEdit has no meter, and that absence is itself the message | n/a |
 | **Background AI processing** | Lr 15.3 (copy/paste/sync in background), C1 16.8 ("When Preview Is Ready", background denoise) | **Done well**: users keep culling while AI works | Yes. Web workers plus a GPU queue |
 | **Faithful versus creative toggle** | Magnific Precision versus creative; Topaz Standard versus Wonder/Redefine | **Important for photographers**: reviewers steer them to faithful modes | Yes; default to faithful |
 | **Spatial reframing / photo-to-video** | iOS 27 Reframe, Lr Animate, Google | **Gimmick for Pro**: "nightmare fuel" faces | Skip |
@@ -801,7 +801,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 2. **Prompt editing's real value is discoverability.** Build it as a *parametric* instruction layer that writes visible, editable adjustments. That fits Lite and runs locally.
 3. **Every incumbent that meters AI adds friction**: credit anxiety, "Flatten AI edits", "needs AI update" warnings on export, failed generations that still worry users. A local editor can keep every AI step live and re-renderable at no cost.
 4. **Offer faithful-first defaults and "suggest, don't apply."** Photographers distrust hallucination.
-5. **Agentic automation is not production-ready anywhere yet.** An inspectable operation graph is the prerequisite, and OpenPhotoshop's Rust core can expose one.
+5. **Agentic automation is not production-ready anywhere yet.** An inspectable operation graph is the prerequisite, and OpenPhotoEdit's Rust core can expose one.
 
 ---
 
@@ -809,7 +809,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 
 ### 5.1 What gets gated, and how
 
-| Capability | Who gates it | Mechanism | Needs cloud technically? | Local build for OpenPhotoshop |
+| Capability | Who gates it | Mechanism | Needs cloud technically? | Local build for OpenPhotoEdit |
 |---|---|---|---|---|
 | Generative fill / expand / replace | Adobe Lr (Generative Expand, credits); Affinity (Canva Premium); Photopea (credits or ads); Luminar (Prime renewal $59/yr after year 1); ON1 (MAX/subscribers, cloud); Canva (allowance) | Credits, subscription, expiring AI in "perpetual" licences | No, but needs a large GPU (13–24 GB VRAM for current open weights) | Optional heavy module; LaMa-class removal as the free default |
 | Object removal | Mostly *not* gated (Lr Remove free at present; Canva fair-use; Apple and Google free) | — | No | Must, local, free |
@@ -832,7 +832,7 @@ Serif remains the development studio inside Canva. There is no longer a separate
 
 ### 5.2 Business-model reading
 
-1. **"Free pro editor" is already taken by Affinity, on Windows and macOS.** Canva funds it by selling cloud AI. OpenPhotoshop cannot win on price against Affinity alone. Its openings are the things Affinity does not have:
+1. **"Free pro editor" is already taken by Affinity, on Windows and macOS.** Canva funds it by selling cloud AI. OpenPhotoEdit cannot win on price against Affinity alone. Its openings are the things Affinity does not have:
    - Browser, Linux and zero-install (Photopea's ground, without ads).
    - **No account** (Affinity requires a Canva login, a visible complaint).
    - **Integrated DAM and culling** (Affinity has none).

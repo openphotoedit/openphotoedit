@@ -19,7 +19,7 @@ crates/
   editor-project    native project format
   editor-ai         AI pre/post-processing, tiling, planner rules (pure Rust)
   editor-wasm       wasm-bindgen surface; lib.rs registers the domains
-  editor-server     native local server binary `openphotoshop`
+  editor-server     native local server binary `openphotoedit`
 ```
 
 - **Pixels**: 8-bit straight RGBA in 256² copy-on-write tiles (`editor_core::plane::Plane`). Absent tile = fill value.

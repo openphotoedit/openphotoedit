@@ -1,9 +1,9 @@
-//! OpenPhotoshop as one local program.
+//! OpenPhotoEdit as one local program.
 //!
 //! The editor is a web app whose engine is Rust compiled to WebAssembly. This
 //! crate is the same product as a single native binary: it serves the built
 //! web app, the AI model files and a couple of small APIs on one loopback
-//! origin, and it can run the engine natively (`openphotoshop render`).
+//! origin, and it can run the engine natively (`openphotoedit render`).
 //!
 //! # One origin, on purpose
 //!
@@ -18,7 +18,7 @@
 //! There is no "read this path" API. A page on this origin, or a hostile page
 //! that DNS-rebinds a name to 127.0.0.1, must not be able to read the disk.
 //! Files reach the UI only when the person running the binary names them on
-//! the command line (`openphotoshop open <file>`), through a one-time token.
+//! the command line (`openphotoedit open <file>`), through a one-time token.
 
 pub mod http;
 pub mod models;
@@ -31,5 +31,5 @@ pub mod web;
 pub use server::{router, AppState};
 
 /// The product name as it appears in `/api/health` and in logs.
-pub const APP: &str = "openphotoshop";
+pub const APP: &str = "openphotoedit";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

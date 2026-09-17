@@ -129,14 +129,14 @@ impl ModelEntry {
 
 /// The per-user models folder.
 ///
-/// macOS `~/Library/Application Support/OpenPhotoshop/models`, Linux
-/// `$XDG_DATA_HOME/openphotoshop/models` (default `~/.local/share/…`), Windows
-/// `%APPDATA%\OpenPhotoshop\models`. `OPENPHOTOSHOP_MODELS_DIR` overrides it.
+/// macOS `~/Library/Application Support/OpenPhotoEdit/models`, Linux
+/// `$XDG_DATA_HOME/openphotoedit/models` (default `~/.local/share/…`), Windows
+/// `%APPDATA%\OpenPhotoEdit\models`. `OPENPHOTOEDIT_MODELS_DIR` overrides it.
 pub fn default_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("OPENPHOTOSHOP_MODELS_DIR").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("OPENPHOTOEDIT_MODELS_DIR").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    let name = if cfg!(all(unix, not(target_os = "macos"))) { "openphotoshop" } else { "OpenPhotoshop" };
+    let name = if cfg!(all(unix, not(target_os = "macos"))) { "openphotoedit" } else { "OpenPhotoEdit" };
     dirs::data_dir().unwrap_or_else(std::env::temp_dir).join(name).join("models")
 }
 

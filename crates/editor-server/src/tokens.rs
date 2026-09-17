@@ -1,6 +1,6 @@
 //! One-time tokens that hand a named file to the UI.
 //!
-//! `openphotoshop open photo.jpg` issues a token for that one path and opens
+//! `openphotoedit open photo.jpg` issues a token for that one path and opens
 //! `/?open=<token>`. The page fetches `/api/file/<token>` once; after that, or
 //! after [`TTL`], the token is dead. The path never appears in a URL, and there
 //! is no way to ask for a path the person running the binary did not name.

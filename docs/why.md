@@ -1,6 +1,6 @@
-# Why OpenPhotoshop
+# Why OpenPhotoEdit
 
-> Working name. "Photoshop" is a registered Adobe trademark; see *Open decisions* in `PLAN.md` before anything public carries it.
+> Named 17 September 2026, replacing the "OpenPhotoshop" working name. "Photoshop" is a registered Adobe trademark and this project is not affiliated with Adobe; it is named after what it does.
 
 ## The problem
 
@@ -100,7 +100,7 @@ These are the bloat rows in the matrix, left out on purpose:
 
 | Gate | Result |
 |---|---|
-| Does not duplicate a suite territory | **Pass, with a boundary.** OpenCapture stays the capture tool and OpenPixels the one-job enhancer. OpenPhotoshop is the layered editor, and Lite reuses both rather than competing with them |
+| Does not duplicate a suite territory | **Pass, with a boundary.** OpenCapture stays the capture tool and OpenPixels the one-job enhancer. OpenPhotoEdit is the layered editor, and Lite reuses both rather than competing with them |
 | No server, no account, no API key | **Pass.** The browser build is fully local; the optional native Rust server runs on the user's own machine |
 | Core is a pure function over a file | **Pass.** A document is operations applied to tiles; codecs, PSD, compositor and AI pre- and post-processing are I/O-free crates |
 | Payoff in under 30 seconds | **Pass.** Drop a photo, tap the person, press Erase. Or drop a PSD and see its layers |

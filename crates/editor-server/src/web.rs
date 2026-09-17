@@ -15,7 +15,7 @@ use crate::http::Content;
 /// maps are left out for size.
 #[cfg(feature = "embed")]
 #[derive(rust_embed::RustEmbed)]
-#[folder = "$OPENPHOTOSHOP_EMBED_DIR"]
+#[folder = "$OPENPHOTOEDIT_EMBED_DIR"]
 #[exclude = "*.map"]
 #[exclude = "*.onnx"]
 #[exclude = "*.ort"]
@@ -52,7 +52,7 @@ impl WebSource {
         match self {
             #[cfg(feature = "embed")]
             WebSource::Embedded => {
-                if env!("OPENPHOTOSHOP_EMBED_PLACEHOLDER") == "1" {
+                if env!("OPENPHOTOEDIT_EMBED_PLACEHOLDER") == "1" {
                     "placeholder"
                 } else {
                     "embedded"

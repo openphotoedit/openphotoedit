@@ -1,6 +1,6 @@
 # Models
 
-Every AI feature in OpenPhotoshop runs on the user's device. The weights
+Every AI feature in OpenPhotoEdit runs on the user's device. The weights
 below are the only ones the app loads. Each is served from the app's own
 origin (`models/<file>`, or the native server's `/models/<file>`), cached in
 the browser's Cache Storage after first use, and pinned by size and sha256 —

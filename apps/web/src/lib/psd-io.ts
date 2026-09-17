@@ -7,7 +7,7 @@ import { baseName, openers, saveBlob } from "./io";
 import type { Summary } from "../engine/types";
 
 export const PROJECT_EXTENSION = "opproj";
-export const PROJECT_MIME = "application/vnd.openphotoshop.project+zip";
+export const PROJECT_MIME = "application/vnd.openphotoedit.project+zip";
 export const PSD_MIME = "image/vnd.adobe.photoshop";
 /** File-picker `accept` for everything this module opens. */
 export const PSD_ACCEPT = `.psd,.psb,.${PROJECT_EXTENSION}`;
@@ -62,7 +62,7 @@ export function openPsd(file: File): Promise<boolean> {
   return openWith("import_psd", file);
 }
 
-/** Open an OpenPhotoshop project as the current document. */
+/** Open an OpenPhotoEdit project as the current document. */
 export function openProject(file: File): Promise<boolean> {
   return openWith("load_project", file);
 }

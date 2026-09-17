@@ -57,7 +57,7 @@ function needDocument() {
 
 let nativeProbe: Promise<boolean> | null = null;
 
-/** Whether the native local server (`openphotoshop` binary) is serving this app. */
+/** Whether the native local server (`openphotoedit` binary) is serving this app. */
 export function nativeServer(): Promise<boolean> {
   nativeProbe ??= fetch(new URL("api/health", document.baseURI), { cache: "no-store" })
     .then(async (r) => (r.ok ? !!(await r.json()).native : false))

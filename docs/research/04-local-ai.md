@@ -1,6 +1,6 @@
 # 04 — Local AI: every incumbent AI feature, mapped to open models that run on the user's machine
 
-Research for OpenPhotoshop: an open-source photo editor that runs entirely on the user's machine. The core is Rust. The browser build uses WebAssembly and WebGPU through onnxruntime-web. An optional native backend (`ort`, candle, llama.cpp) uses CUDA, Metal or CoreML for heavy models. Nothing is paid, nothing calls a cloud, and there are no API keys. There are two profiles: Lite and Pro.
+Research for OpenPhotoEdit: an open-source photo editor that runs entirely on the user's machine. The core is Rust. The browser build uses WebAssembly and WebGPU through onnxruntime-web. An optional native backend (`ort`, candle, llama.cpp) uses CUDA, Metal or CoreML for heavy models. Nothing is paid, nothing calls a cloud, and there are no API keys. There are two profiles: Lite and Pro.
 
 Snapshot date: **2026-09-14**.
 
@@ -514,7 +514,7 @@ current selection / layers ─┐
 
 ## 9. Reusable as-is from openpixels and openphotoid
 
-| Asset | Where | Licence | Status | Use in OpenPhotoshop |
+| Asset | Where | Licence | Status | Use in OpenPhotoEdit |
 |---|---|---|---|---|
 | `realesr_general_x4v3.onnx`, `_wdn_`, `_dn50` (4.9 MB each) | openpixels `MODELS.md` | BSD-3 | Shipped, sha256-pinned, WebGPU-proven [M] | Tier 1 upscale and denoise |
 | `realesrgan_x4plus.onnx` (67 MB), `realesrgan_x4plus_anime_6b.onnx` (18 MB) | openpixels | BSD-3 | Shipped [M] | Tier 2 upscale; anime / illustration |
@@ -531,7 +531,7 @@ current selection / layers ─┐
 | `ort.js` session options: `enableMemPattern:false`, `freeDimensionOverrides`, `logSeverityLevel:3`; constant-square tiling | openpixels `apps/web/src/lib/engine` | — | Fixes three WebGPU and load-time bugs [M] | Copy into the browser engine |
 | `#/diagnostics/run` route pattern | openphotoid web app | — | Found the iOS 17 failure [M] | Canary and diagnostics page |
 
-Sibling `package.json` files still declare `onnxruntime-web ^1.20.1`, while later work was measured on 1.26–1.29 [M]. Pin one version for OpenPhotoshop and re-run the canaries on upgrade.
+Sibling `package.json` files still declare `onnxruntime-web ^1.20.1`, while later work was measured on 1.26–1.29 [M]. Pin one version for OpenPhotoEdit and re-run the canaries on upgrade.
 
 ---
 

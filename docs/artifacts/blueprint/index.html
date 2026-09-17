@@ -1,4 +1,4 @@
-<title>OpenPhotoshop Blueprint</title>
+<title>OpenPhotoEdit Blueprint</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
@@ -206,9 +206,9 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);font-si
   <div class="pills">
     <span class="pill verdict"><span data-l="en">Verdict: build, in phases</span><span data-l="zh">结论：分阶段构建</span></span>
     <span class="pill"><span data-l="en">Research · 14 Sep 2026</span><span data-l="zh">调研 · 2026 年 9 月 14 日</span></span>
-    <span class="pill"><span data-l="en">Working name</span><span data-l="zh">暂定名</span></span>
+    <span class="pill"><span data-l="en">Named 17 Sep 2026</span><span data-l="zh">2026 年 9 月 17 日定名</span></span>
   </div>
-  <h1><span data-l="en">OpenPhotoshop: a layered photo editor with unmetered local AI</span><span data-l="zh">OpenPhotoshop：自带不限量本地 AI 的分层照片编辑器</span></h1>
+  <h1><span data-l="en">OpenPhotoEdit: a layered photo editor with unmetered local AI</span><span data-l="zh">OpenPhotoEdit：自带不限量本地 AI 的分层照片编辑器</span></h1>
   <p class="lede"><span data-l="en">We tore down Photoshop 27.10 and Camera Raw 18.6, the leading rival editors, 30+ open-source projects and the local AI models that could replace cloud features. No open-source editor combines faithful PSD round-trip with credit-free AI in a browser tab. That gap is worth building for, but as a sequence, not a clone.</span><span data-l="zh">我们逐项拆解了 Photoshop 27.10 与 Camera Raw 18.6、主要的竞品编辑器、30 多个开源项目，以及能替代云端功能的本地 AI 模型。结论是：目前没有哪个开源编辑器能在浏览器标签页里同时做到 PSD 往返保真和不扣积分的 AI。这个空白值得去填，但要分步推进，而不是照搬一个 Photoshop。</span></p>
   <div class="stats" id="stats">
     <div class="stat"><b id="st-rows">361</b><span data-l="en">capabilities</span><span data-l="zh">项功能</span></div>
@@ -283,7 +283,7 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);font-si
   </div>
   <div class="note">
     <p><span data-l="en"><b>Profiles are views of one document.</b> Every Lite step is a real adjustment layer, mask or pixel layer underneath. Open in Pro shows those layers exactly; nothing is flattened. The profile changes the tool registry, panel layout and defaults, never the file.</span><span data-l="zh"><b>两个配置只是同一份文档的不同视图。</b>Lite 里的每一步，底层都是真正的调整图层、蒙版或像素图层。在 Pro 中打开会原样显示这些图层，不做任何拼合。切换配置只改变工具集、面板布局和默认值，从不改动文件。</span></p>
-    <p><span data-l="en"><b>Rust everywhere.</b> The engine compiles to wasm and runs in a worker in a browser tab, or runs as one native binary: <code>openphotoshop serve</code> opens the same UI at <code>127.0.0.1</code> with native AI and no 4 GB memory cap.</span><span data-l="zh"><b>全栈 Rust。</b>引擎可以编译为 wasm，在浏览器标签页的 worker 里运行；也可以是一个原生程序：<code>openphotoshop serve</code> 在 <code>127.0.0.1</code> 打开同一套界面，启用原生 AI，没有 4 GB 内存上限。</span></p>
+    <p><span data-l="en"><b>Rust everywhere.</b> The engine compiles to wasm and runs in a worker in a browser tab, or runs as one native binary: <code>openphotoedit serve</code> opens the same UI at <code>127.0.0.1</code> with native AI and no 4 GB memory cap.</span><span data-l="zh"><b>全栈 Rust。</b>引擎可以编译为 wasm，在浏览器标签页的 worker 里运行；也可以是一个原生程序：<code>openphotoedit serve</code> 在 <code>127.0.0.1</code> 打开同一套界面，启用原生 AI，没有 4 GB 内存上限。</span></p>
   </div>
 </section>
 
@@ -388,9 +388,9 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);font-si
     <li>
       <h3><span data-l="en">Name</span><span data-l="zh">名称</span><small data-l="en">Trademark risk</small><small data-l="zh">商标风险</small></h3>
       <div class="q">
-        <p><span data-l="en">"Photoshop" is Adobe's registered mark. Using it invites a GitHub DMCA/trademark takedown, store rejection and a domain dispute.</span><span data-l="zh">“Photoshop”是 Adobe 的注册商标。用在名字里会招来 GitHub 的 DMCA/商标下架、应用商店拒审，以及域名争议。</span></p>
-        <p class="rec"><b><span data-l="en">Recommend</span><span data-l="zh">建议</span></b><span data-l="en">Keep <code>openphotoshop/</code> as the working folder; pick the public name with <code>openapps-product-name</code> before the first push.</span><span data-l="zh">保留 <code>openphotoshop/</code> 作为工作目录；首次推送前用 <code>openapps-product-name</code> 确定对外名称。</span></p>
-        <span class="blocker"><span data-l="en">Blocks public launch</span><span data-l="zh">不解决就无法公开发布</span></span>
+        <p><span data-l="en">Settled. The working name "OpenPhotoshop" used Adobe's registered mark, which invites a GitHub DMCA/trademark takedown, store rejection and a domain dispute. The product is now <b>OpenPhotoEdit</b>: folder, binary, project format and accent-slot row all moved with it.</span><span data-l="zh">已确定。原暂定名“OpenPhotoshop”使用了 Adobe 的注册商标，会招来 GitHub 的 DMCA/商标下架、应用商店拒审以及域名争议。产品现名 <b>OpenPhotoEdit</b>：目录、可执行文件、项目格式和配色槽记录都已随之更名。</span></p>
+        <p class="rec"><b><span data-l="en">Next</span><span data-l="zh">下一步</span></b><span data-l="en">Register the domain and the GitHub account under the new name before the first push.</span><span data-l="zh">首次推送前，用新名称注册域名和 GitHub 账号。</span></p>
+        <span class="blocker"><span data-l="en">Domain and account still to register</span><span data-l="zh">域名与账号尚未注册</span></span>
       </div>
     </li>
     <li>
@@ -426,7 +426,7 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);font-si
 
 <footer>
   <p><span data-l="en">Sources: <code>docs/why.md</code>, <code>PLAN.md</code>, <code>docs/feature-matrix.md</code> (counts from <code>scripts/matrix-counts.mjs</code>) and <code>docs/research/01–04</code>. Research compiled 14 Sep 2026.</span><span data-l="zh">资料来源：<code>docs/why.md</code>、<code>PLAN.md</code>、<code>docs/feature-matrix.md</code>（统计数据由 <code>scripts/matrix-counts.mjs</code> 生成）以及 <code>docs/research/01–04</code>。调研完成于 2026 年 9 月 14 日。</span></p>
-  <p><span data-l="en">"Photoshop" is a registered trademark of Adobe. OpenPhotoshop is a working name, not affiliated with Adobe.</span><span data-l="zh">“Photoshop”是 Adobe 的注册商标。OpenPhotoshop 仅为暂定名，与 Adobe 无关。</span></p>
+  <p><span data-l="en">"Photoshop" is a registered trademark of Adobe. OpenPhotoEdit is not affiliated with Adobe.</span><span data-l="zh">“Photoshop”是 Adobe 的注册商标。OpenPhotoEdit 与 Adobe 无关。</span></p>
 </footer>
 </div>
 
@@ -459,12 +459,12 @@ const T = {
   en:{search:'Search capabilities, notes, products…', allGroups:'All groups (A–S)', later:'Later', no:'No',
       showing:(n,t)=>`Showing <b>${n}</b> of ${t}`, rows:'rows', exit:'Exit', noExit:'No exit criterion is set in PLAN.md yet.',
       foot:(l,n)=>`Also in the matrix: ${l} rows for Later and ${n} rows deliberately not built.`,
-      empty:'No capability matches these filters.', title:'OpenPhotoshop Blueprint', size:{S:'Days',M:'Weeks',L:'Months',XL:'Multi-person-months'},
+      empty:'No capability matches these filters.', title:'OpenPhotoEdit Blueprint', size:{S:'Days',M:'Weeks',L:'Months',XL:'Multi-person-months'},
       pro:{M:'Must',E:'Edge',B:'Bloat'}},
   zh:{search:'搜索功能、备注、产品……', allGroups:'全部分组（A–S）', later:'以后', no:'不做',
       showing:(n,t)=>`显示 <b>${n}</b> / ${t} 项`, rows:'行', exit:'完成标准', noExit:'PLAN.md 尚未设定完成标准。',
       foot:(l,n)=>`矩阵中另有 ${l} 行排在“以后”，${n} 行明确不做。`,
-      empty:'没有符合筛选条件的功能。', title:'OpenPhotoshop 蓝图', size:{S:'数天',M:'数周',L:'数月',XL:'多人数月'},
+      empty:'没有符合筛选条件的功能。', title:'OpenPhotoEdit 蓝图', size:{S:'数天',M:'数周',L:'数月',XL:'多人数月'},
       pro:{M:'必需',E:'小众',B:'冗余'}}
 };
 

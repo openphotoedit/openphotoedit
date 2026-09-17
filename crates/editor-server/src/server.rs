@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `GET /api/health` | `{app, version, native, api, web, features}` |
 //! | `GET /api/models` | the models manifest with `installed` per entry |
-//! | `GET /api/file/<token>` | the bytes of a file named by `openphotoshop open`, once |
+//! | `GET /api/file/<token>` | the bytes of a file named by `openphotoedit open`, once |
 //! | `GET /models/<path>` | a model file: per-user folder first, then the web build |
 //! | `GET /<path>` | the web app; unknown extensionless paths get `index.html` |
 
@@ -159,7 +159,7 @@ async fn file_handoff(State(st): St, axum::extract::Path(token): axum::extract::
         Ok(h) => h,
         Err(TakeError::Unknown) => return (StatusCode::NOT_FOUND, "This link is not valid.").into_response(),
         Err(TakeError::Gone) => {
-            return (StatusCode::GONE, "This link was already used or has expired. Run `openphotoshop open` again.").into_response()
+            return (StatusCode::GONE, "This link was already used or has expired. Run `openphotoedit open` again.").into_response()
         }
     };
     let found = match Found::open(&handoff.path).await {
@@ -213,7 +213,7 @@ async fn model_file(State(st): St, method: Method, uri: Uri, headers: HeaderMap)
             return h::respond(&method, &headers, found, &name, Cache::Revalidate).await;
         }
     }
-    (StatusCode::NOT_FOUND, "This model is not installed. Run `openphotoshop models list`.").into_response()
+    (StatusCode::NOT_FOUND, "This model is not installed. Run `openphotoedit models list`.").into_response()
 }
 
 async fn web_file(State(st): St, method: Method, uri: Uri, headers: HeaderMap) -> Response {

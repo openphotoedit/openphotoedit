@@ -1,4 +1,4 @@
-# OpenPhotoshop — master feature matrix
+# OpenPhotoEdit — master feature matrix
 
 Compiled 2026-09-14 from the four research files in `docs/research/`.
 
