@@ -6,12 +6,16 @@ photo you want fixed, **Pro** for layers, masks and PSD files. The engine is
 Rust, it runs on your own machine, and the AI features are local and
 unmetered — no account, no credits, nothing uploaded.
 
-## Which file do I want?
+## What to download
 
-| File | For |
-|---|---|
-| `OpenPhotoEdit-macOS-arm64-*.zip` | **Apple Silicon Mac.** Unzip and double-click `OpenPhotoEdit.app`. It opens the editor in your browser from `127.0.0.1` and runs the engine natively — no 4 GB browser memory cap, and AI runs on the CPU/GPU directly. |
-| `openphotoedit-web-*.zip` | **Self-hosting the web app.** Static files: serve the folder over HTTPS (or `python3 -m http.server` locally) and open it. |
+`OpenPhotoEdit-macOS-arm64-*.zip` — **Apple Silicon Mac.** Unzip and
+double-click `OpenPhotoEdit.app`. It opens the editor in your browser from
+`127.0.0.1` and runs the engine natively: no 4 GB browser memory cap, and AI
+runs on the CPU/GPU directly.
+
+Nothing to download for the web app — it runs at
+[openphotoedit.com](https://openphotoedit.com). Building it yourself takes
+`npm install && npm run build` in `apps/web`.
 
 **The Mac app is not signed or notarised yet**, so macOS will refuse the first
 launch. Right-click the app → Open → Open, or:
@@ -20,7 +24,7 @@ launch. Right-click the app → Open → Open, or:
 xattr -d com.apple.quarantine /Applications/OpenPhotoEdit.app
 ```
 
-**AI models are not in either archive** (they are ~1 GB). The app downloads
+**AI models are not in the archive** (they are ~1 GB). The app downloads
 what a feature needs the first time you use it, or fetch them all up front
 with `OpenPhotoEdit.app/Contents/MacOS/OpenPhotoEdit models fetch --all`.
 
@@ -50,5 +54,6 @@ with `OpenPhotoEdit.app/Contents/MacOS/OpenPhotoEdit models fetch --all`.
 
 ## What this is not
 
-No account, no telemetry, no store listing, no paid tier. The web app is not
-deployed anywhere yet — `openphotoedit.com` is registered but not serving.
+No account, no telemetry, no store listing, no paid tier. There is no
+Windows, Linux, iOS or Android build yet; the Mac app and the web app are the
+only two surfaces.
