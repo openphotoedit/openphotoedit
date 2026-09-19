@@ -29,6 +29,21 @@ function exec(engine: Engine, cmd: Record<string, unknown>, bytes?: Uint8Array) 
   return r;
 }
 
+/**
+ * Run several commands as ONE undo step (engine `edit.begin`/`edit.end`). If
+ * `fn` throws, the document is restored (`edit.cancel`) and the error rethrown.
+ */
+function oneStep(engine: Engine, label: string, fn: () => void) {
+  exec(engine, { op: "edit.begin", label });
+  try {
+    fn();
+  } catch (e) {
+    exec(engine, { op: "edit.cancel" });
+    throw e;
+  }
+  exec(engine, { op: "edit.end" });
+}
+
 function find(layers: LayerInfo[], id: number | null): LayerInfo | null {
   for (const l of layers) {
     if (l.id === id) return l;
@@ -332,12 +347,18 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
     const s = summary(ctx.engine);
     const layer = activePixelLayer(s);
     if (!layer) throw new Error("Select a pixel layer to remove its background.");
-    if (layer.mask) throw new Error(`“${layer.name}” already has a mask. Delete it first, then try again.`);
     const { matte, model, w, h } = await subjectMatte(ctx, String(ctx.params.model ?? "auto"));
     t.mark("matte");
-    exec(ctx.engine, { op: "layer.add-mask", id: layer.id, from: "reveal-all" });
-    exec(ctx.engine, { op: "layer.set-mask-pixels", id: layer.id, x: 0, y: 0, width: w, height: h }, matte);
-    return { changed: true, result: { model, layer: layer.id, timings: t.done() } };
+    // Combine with a mask the layer already has (it only ever hides more),
+    // and limit the removal to the selection when there is one.
+    const existing = layer.mask ? ctx.engine.mask_region(layer.id, 0, 0, w, h) : new Uint8Array(0);
+    const selection = s.selection ? ctx.engine.selection_region(0, 0, w, h) : new Uint8Array(0);
+    const combined = wasm.ai_combine_masks(matte, existing, selection);
+    oneStep(ctx.engine, "Remove Background", () => {
+      if (!layer.mask) exec(ctx.engine, { op: "layer.add-mask", id: layer.id, from: "reveal-all" });
+      exec(ctx.engine, { op: "layer.set-mask-pixels", id: layer.id, x: 0, y: 0, width: w, height: h }, combined);
+    });
+    return { changed: true, result: { model, layer: layer.id, combined: !!layer.mask, inSelection: !!s.selection, timings: t.done() } };
   },
 
   "ai.blur-background": async (ctx) => {
@@ -355,10 +376,13 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
     ctx.progress({ message: "Blurring the background" });
     const blurred = wasm.ai_background_blur(src, w, h, bg, sigma);
     t.mark("blur");
-    const r = exec(ctx.engine, { op: "layer.import", width: w, height: h, x: 0, y: 0, name: "Background blur", above: layer?.id, provenance: `ai:${model}` }, blurred);
-    const id = r.data?.id as number;
-    exec(ctx.engine, { op: "layer.add-mask", id, from: "reveal-all" });
-    exec(ctx.engine, { op: "layer.set-mask-pixels", id, x: 0, y: 0, width: w, height: h }, bg);
+    let id = 0;
+    oneStep(ctx.engine, "Blur Background", () => {
+      const r = exec(ctx.engine, { op: "layer.import", width: w, height: h, x: 0, y: 0, name: "Background blur", above: layer?.id, provenance: `ai:${model}` }, blurred);
+      id = r.data?.id as number;
+      exec(ctx.engine, { op: "layer.add-mask", id, from: "reveal-all" });
+      exec(ctx.engine, { op: "layer.set-mask-pixels", id, x: 0, y: 0, width: w, height: h }, bg);
+    });
     return { changed: true, result: { model, layer: id, sigma, timings: t.done() } };
   },
 
@@ -443,15 +467,17 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
       t.mark("model");
       const out = inp.finish();
       const provenance = `ai:${model}`;
-      if (!layer) {
-        const r = exec(engine, { op: "layer.add-pixel", name: "Remove" });
-        layer = { id: r.data?.id as number } as LayerInfo;
-      }
-      // Not `respect_selection`: the fill is deliberately a few pixels wider
-      // than the selection (editor-ai dilates the hole and feathers the
-      // blend). Clipping to the selection's soft edge left the removed
-      // object's own outline standing as a coloured contour.
-      exec(engine, { op: "layer.set-pixels", id: layer.id, x: region.x, y: region.y, width: region.w, height: region.h, label: "Remove", provenance }, out);
+      oneStep(engine, "Remove", () => {
+        if (!layer) {
+          const r = exec(engine, { op: "layer.add-pixel", name: "Remove" });
+          layer = { id: r.data?.id as number } as LayerInfo;
+        }
+        // Not `respect_selection`: the fill is deliberately a few pixels wider
+        // than the selection (editor-ai dilates the hole and feathers the
+        // blend). Clipping to the selection's soft edge left the removed
+        // object's own outline standing as a coloured contour.
+        exec(engine, { op: "layer.set-pixels", id: layer.id, x: region.x, y: region.y, width: region.w, height: region.h, label: "Remove", provenance }, out);
+      });
       return { changed: true, bytes: debugBytes, result: { model, holeFraction, backend: made.backend, runs: n, region, crops, timings: t.done() } };
     } finally {
       inp.free();
@@ -474,8 +500,10 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
     const src = engine.layer_region(layer.id, 0, 0, w, h);
     const r = await superResolve(ctx, model, src, w, h, factor);
     t.mark("model");
-    exec(engine, { op: "image.resize", width: r.w, height: r.h, resample: "bicubic" });
-    exec(engine, { op: "layer.set-pixels", id: layer.id, x: 0, y: 0, width: r.w, height: r.h, label: `Upscale ${factor}×`, provenance: `ai:${model}` }, r.rgba);
+    oneStep(engine, `Upscale ${factor}×`, () => {
+      exec(engine, { op: "image.resize", width: r.w, height: r.h, resample: "bicubic" });
+      exec(engine, { op: "layer.set-pixels", id: layer.id, x: 0, y: 0, width: r.w, height: r.h, label: `Upscale ${factor}×`, provenance: `ai:${model}` }, r.rgba);
+    });
     return { changed: true, result: { model, backend: r.backend, width: r.w, height: r.h, timings: t.done() } };
   },
 

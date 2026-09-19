@@ -486,6 +486,21 @@ fn layer_records(out: &mut Out, l: &Layer, records: &mut Vec<Record>) -> Result<
                     rec.channels = empty_channels(psb);
                 }
             }
+            LayerKind::Adjustment(Adjustment::Grain(g)) => {
+                // Photoshop has no grain adjustment layer. Write the grain as
+                // a canvas-sized Linear Light pixel layer (mid-grey ± half the
+                // delta, so Linear Light adds exactly the delta Grain gives a
+                // midtone), and keep the parameters in a private block so
+                // OpenPhotoEdit reads it back as the live adjustment.
+                let (w, h) = (out.doc.width as usize, out.doc.height as usize);
+                let rgba = kinds::grain_layer_pixels(g, w, h);
+                let rect = Rect::new(0, 0, w as i32, h as i32);
+                rec.rect = rect;
+                rec.channels = rgba_channels(&rgba, rect, psb);
+                rec.blend = *b"lLit";
+                blocks.push((kinds::GRAIN_KEY, kinds::write_grain(g, l.blend.psd_key())));
+                out.warn("Grain is saved as a Linear Light noise layer for Photoshop; it stays an editable Grain adjustment in OpenPhotoEdit.");
+            }
             LayerKind::Adjustment(adj) => {
                 rec.flags |= 16;
                 rec.channels = empty_channels(psb);

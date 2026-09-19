@@ -15,6 +15,7 @@
 //! ignore fields they do not know, and turn layer kinds they do not know
 //! into empty pixel layers with a warning.
 
+pub mod validate;
 pub mod zip;
 
 use std::collections::BTreeMap;
@@ -61,8 +62,13 @@ pub struct LoadOptions {
 }
 
 impl Default for LoadOptions {
+    /// On 32-bit wasm the whole heap is at most 4 GB, and the document, its
+    /// history, the render cache and the browser's copy of the file share
+    /// it; 1.5 GB of decoded pixels is the most a load can take and still
+    /// leave room to edit. (The previous 3 GB could never be reached: the
+    /// tab ran out of memory first.)
     fn default() -> Self {
-        LoadOptions { max_bytes: if cfg!(target_pointer_width = "32") { 3_000_000_000 } else { 32_000_000_000 } }
+        LoadOptions { max_bytes: if cfg!(target_pointer_width = "32") { 1_500_000_000 } else { 32_000_000_000 } }
     }
 }
 
@@ -228,7 +234,7 @@ fn decode_plane(data: &[u8], budget: &mut u64) -> Result<Plane, Error> {
     let (w, h) = (u32_at(8)?, u32_at(12)?);
     let ch = *data.get(16).ok_or_else(bad)? as usize;
     let fill = data.get(17..21).ok_or_else(bad)?;
-    if w > 300_000 || h > 300_000 || !(ch == 1 || ch == 4) {
+    if w as f64 > validate::MAX_SIDE || h as f64 > validate::MAX_SIDE || !(ch == 1 || ch == 4) {
         return Err(bad());
     }
     let cols = w.div_ceil(TILE).max(1);
@@ -250,7 +256,7 @@ fn decode_plane(data: &[u8], budget: &mut u64) -> Result<Plane, Error> {
         if tx >= cols || ty >= rows {
             return Err(bad());
         }
-        let z = data.get(at..at + len).ok_or(Error::Corrupt("a pixel plane is truncated"))?;
+        let z = at.checked_add(len).and_then(|end| data.get(at..end)).ok_or(Error::Corrupt("a pixel plane is truncated"))?;
         at += len;
         if tile_bytes as u64 > *budget {
             return Err(Error::TooLarge);
@@ -413,7 +419,7 @@ impl Loader<'_> {
             return Err(Error::Invalid(format!("document size {}×{}", d.width, d.height)));
         }
         self.depth += 1;
-        if self.depth > 16 {
+        if self.depth > validate::MAX_SMART_DEPTH {
             return Err(Error::Corrupt("smart objects are nested too deeply"));
         }
         let mut doc = Document::new(d.width, d.height);
@@ -496,7 +502,7 @@ impl Loader<'_> {
 /// Read project bytes into a document.
 pub fn load(bytes: &[u8], opts: &LoadOptions) -> Result<Loaded, Error> {
     let zip = ZipReader::open(bytes)?;
-    let json = zip.read("manifest.json", 256_000_000)?.ok_or(Error::NotProject)?;
+    let json = zip.read("manifest.json", validate::MAX_MANIFEST_BYTES)?.ok_or(Error::NotProject)?;
     let manifest: Manifest = serde_json::from_slice(&json).map_err(|e| Error::Invalid(format!("manifest: {e}")))?;
     if manifest.format != FORMAT && manifest.format != LEGACY_FORMAT {
         return Err(Error::NotProject);
@@ -504,6 +510,10 @@ pub fn load(bytes: &[u8], opts: &LoadOptions) -> Result<Loaded, Error> {
     if manifest.min_reader > VERSION {
         return Err(Error::TooNew(manifest.version));
     }
+    // Value limits, on the manifest as written (before `f32` turns 1e39
+    // into infinity), before any plane is inflated.
+    let raw: Value = serde_json::from_slice(&json).map_err(|e| Error::Invalid(format!("manifest: {e}")))?;
+    validate::manifest(&raw["document"])?;
     let mut loader = Loader { zip, budget: opts.max_bytes, warnings: Vec::new(), depth: 0 };
     let doc = loader.doc(manifest.document)?;
     Ok(Loaded { doc, warnings: loader.warnings })

@@ -33,7 +33,12 @@
   let closing = false;
   const session = new PreviewSession();
 
-  const extra = () => (def.op === "filter.clouds" ? { fg: editor.primary, bg: editor.secondary } : {});
+  // Add Noise gets its own seed each time the dialog opens (kept while it is
+  // open, so the preview is stable), so repeated applications do not stack
+  // the same pattern. A smart filter being edited keeps its seed.
+  const pickSeed = () => (typeof smart?.initial?.seed === "number" ? (smart.initial.seed as number) : crypto.getRandomValues(new Uint32Array(1))[0]);
+  const noiseSeed = pickSeed();
+  const extra = () => (def.op === "filter.clouds" ? { fg: editor.primary, bg: editor.secondary } : def.op === "filter.add-noise" ? { seed: noiseSeed } : {});
   const command = () => buildCommand(def, $state.snapshot(values), extra());
 
   async function apply() {

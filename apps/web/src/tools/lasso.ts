@@ -1,7 +1,10 @@
 // Lasso (freehand) and polygonal lasso (click points; double-click, Enter or
 // clicking the first point closes; Backspace removes the last; Escape
-// cancels). Holding alt while dragging the freehand lasso lays straight
-// segments, as in Photoshop.
+// cancels). Holding Alt while dragging the freehand lasso lays straight
+// segments, as in Photoshop: the segment follows the pointer from the last
+// point, releasing Alt goes back to freehand from there, and releasing the
+// button with Alt still held keeps the outline open so each click adds a
+// corner; letting go of Alt then closes it.
 
 import type { EditorStore } from "../lib/editor.svelte";
 import type { Tool, ToolPointer } from "./types";
@@ -10,7 +13,18 @@ import { antsStroke, dist, docPolyPath, drawHandle, redraw, run, selectionMode, 
 
 type Mode = "replace" | "add" | "subtract" | "intersect";
 
-let free: { points: Pt[]; mode: Mode } | null = null;
+interface Free {
+  points: Pt[];
+  mode: Mode;
+  /** Alt held: the straight segment's moving end (not yet a point). */
+  straight: Pt | null;
+  /** Button released with Alt held: clicks add corners until Alt is let go. */
+  open: boolean;
+  /** Alt was held at the press to choose the mode; straight segments start once it is pressed again. */
+  altFree: boolean;
+}
+
+let free: Free | null = null;
 
 async function commit(ed: EditorStore, pts: Pt[], mode: Mode) {
   if (pts.length < 3) {
@@ -24,35 +38,103 @@ function modeAtDown(ed: EditorStore, p: ToolPointer): Mode {
   return ed.summary?.selection && (p.shift || p.alt) ? selectionMode(p, "replace") : (toolSettings.selectMode as Mode);
 }
 
-export const lasso: Tool = {
+async function closeFree(ed: EditorStore) {
+  const f = free;
+  free = null;
+  redraw(ed);
+  if (!f) return;
+  const pts = f.straight ? [...f.points, f.straight] : f.points;
+  await commit(ed, thin(pts, 0.5 / Math.max(ed.view.zoom, 0.01)), f.mode);
+  redraw(ed);
+}
+
+export const lasso: Tool & { keyup(ed: EditorStore, e: KeyboardEvent): boolean } = {
   id: "lasso",
   label: "Lasso",
   shortcut: "l",
   cursor: "crosshair",
   down(ed, p) {
-    free = { points: [{ x: p.x, y: p.y }], mode: modeAtDown(ed, p) };
+    if (free?.open) {
+      // A corner of the open outline; dragging from here without Alt goes freehand again.
+      free.points.push({ x: p.x, y: p.y });
+      free.straight = null;
+      if (!p.alt) free.open = false;
+      redraw(ed);
+      return;
+    }
+    const keysMode = !!ed.summary?.selection && p.alt;
+    free = { points: [{ x: p.x, y: p.y }], mode: modeAtDown(ed, p), straight: null, open: false, altFree: !keysMode };
   },
   move(ed, p, pressed) {
     trackHover(ed, p);
-    if (!pressed || !free) return;
-    const last = free.points[free.points.length - 1];
-    // Sub-pixel jitter makes huge polygons for nothing; keep ~1 view px.
-    if (dist(last, p) * ed.view.zoom >= 1) free.points.push({ x: p.x, y: p.y });
-  },
-  async up(ed) {
     const f = free;
-    free = null;
     if (!f) return;
-    await commit(ed, thin(f.points, 0.5 / Math.max(ed.view.zoom, 0.01)), f.mode);
-    redraw(ed);
+    if (!p.alt) f.altFree = true;
+    if (f.open) {
+      f.straight = { x: p.x, y: p.y };
+      redraw(ed);
+      return;
+    }
+    if (!pressed) return;
+    if (p.alt && f.altFree) {
+      f.straight = { x: p.x, y: p.y };
+      return;
+    }
+    if (f.straight) {
+      // Alt let go: the straight segment ends here, freehand resumes.
+      f.points.push({ x: p.x, y: p.y });
+      f.straight = null;
+      return;
+    }
+    const last = f.points[f.points.length - 1];
+    // Sub-pixel jitter makes huge polygons for nothing; keep ~1 view px.
+    if (dist(last, p) * ed.view.zoom >= 1) f.points.push({ x: p.x, y: p.y });
+  },
+  async up(ed, p) {
+    const f = free;
+    if (!f) return;
+    if (p.alt && f.altFree && f.points.length >= 1) {
+      // Keep going with clicks while Alt stays down.
+      if (f.straight) f.points.push(f.straight);
+      else if (!f.open) f.points.push({ x: p.x, y: p.y });
+      f.straight = null;
+      f.open = true;
+      redraw(ed);
+      return;
+    }
+    if (f.straight) f.points.push({ x: p.x, y: p.y });
+    f.straight = null;
+    await closeFree(ed);
+  },
+  keyup(ed, e) {
+    if (e.key === "Alt" && free?.open) {
+      free.straight = null;
+      void closeFree(ed);
+      return true;
+    }
+    return false;
+  },
+  key(ed, e) {
+    if (e.key === "Enter" && free?.open) {
+      free.straight = null;
+      void closeFree(ed);
+      return true;
+    }
+    return false;
   },
   cancel(ed) {
     free = null;
     redraw(ed);
   },
+  deactivate(ed) {
+    free = null;
+    redraw(ed);
+  },
   overlay(ed, ctx) {
-    if (!free || free.points.length < 2) return;
-    antsStroke(ctx, () => docPolyPath(ed, ctx, free!.points, false));
+    if (!free) return;
+    const pts = free.straight ? [...free.points, free.straight] : free.points;
+    if (pts.length < 2) return;
+    antsStroke(ctx, () => docPolyPath(ed, ctx, pts, false));
   },
 };
 

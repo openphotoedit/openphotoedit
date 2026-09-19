@@ -2,6 +2,7 @@
   // Controls for every adjustment kind. Used by the Properties panel (for
   // adjustment layers) and by Image › Adjustments dialogs (destructive).
   // `onchange(next, final)`: final is false while dragging.
+  import { untrack } from "svelte";
   import type { Adjustment, GradientStop, Rgba8 } from "../../engine/types";
   import { t } from "../../lib/i18n";
   import { pickFiles } from "../../lib/io";
@@ -16,10 +17,30 @@
   import Slider from "../../ui/Slider.svelte";
   import type { HistogramData } from "../../ui/histogram";
   import type { CurvePoint } from "../../ui/curve";
-  import { parseCube, withDefaults } from "../adjustments";
+  import Pipette from "@lucide/svelte/icons/pipette";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Minus from "@lucide/svelte/icons/minus";
+  import Pointer from "@lucide/svelte/icons/pointer";
+  import IconButton from "../../ui/IconButton.svelte";
+  import { newSeed, parseCube, withDefaults } from "../adjustments";
+  import { armCanvasPick, sampleComposite, type PickPoint } from "./canvas-pick";
+  import HueBandBar from "./HueBandBar.svelte";
+  import { DEFAULT_BANDS, RANGE_HUES, bestRange, centered, exclude, hueOf, include, invert, type Band, type HueSatParams } from "./hue-bands";
+  import { levelsFromSample, type Dropper, type LevelsValue } from "./levels-pick";
   import LevelsTrack from "./LevelsTrack.svelte";
 
-  let { value, histogram = null, onchange }: { value: Adjustment; histogram?: HistogramData | null; onchange: (next: Adjustment, final: boolean) => void } = $props();
+  let {
+    value,
+    histogram = null,
+    onchange,
+    sample = (x: number, y: number) => sampleComposite(x, y, 3),
+  }: {
+    value: Adjustment;
+    histogram?: HistogramData | null;
+    onchange: (next: Adjustment, final: boolean) => void;
+    /** Colour the adjustment receives at a document point (eyedroppers). */
+    sample?: (x: number, y: number) => Promise<Rgba8 | null>;
+  } = $props();
 
   const v = $derived(withDefaults(value) as Record<string, any>);
 
@@ -86,6 +107,8 @@
   let hsRange = $state(-1);
   const RANGES = [t("Reds"), t("Yellows"), t("Greens"), t("Cyans"), t("Blues"), t("Magentas")];
   const hsCur = $derived(hsRange < 0 ? v.master : v.ranges?.[hsRange]);
+  const hsBands = $derived(((v.bands as Band[] | undefined) ?? DEFAULT_BANDS) as Band[]);
+  const hsParams = $derived(v as unknown as HueSatParams);
   function setHs(key: string, val: number, final: boolean) {
     if (hsRange < 0) patch({ master: { ...snap(v.master), [key]: val } }, final);
     else {
@@ -94,6 +117,111 @@
       patch({ ranges }, final);
     }
   }
+  function setBand(i: number, band: Band, final: boolean, extra: Record<string, unknown> = {}) {
+    const bands = snap(hsBands).map((b) => [...b]) as Band[];
+    bands[i] = band;
+    patch({ bands, ...extra }, final);
+  }
+
+  // ---- Canvas eyedroppers and the targeted-adjust hand
+  type Armed = "hs-sample" | "hs-add" | "hs-remove" | "hs-target" | "lv-black" | "lv-gray" | "lv-white";
+  let armed = $state<Armed | null>(null);
+  let pickNote = $state<string | null>(null);
+  const toggleArm = (a: Armed) => ((armed = armed === a ? null : a), (pickNote = null));
+
+  async function hueAt(p: PickPoint) {
+    const c = await sample(p.x, p.y);
+    const h = c ? hueOf(c.r, c.g, c.b) : null;
+    pickNote = h ? null : t("That colour is grey, so it has no hue to pick. Click a coloured area.");
+    return h?.hue ?? null;
+  }
+
+  // The targeted-adjust drag: the range is known only once the sample
+  // arrives, so moves before that are remembered and applied then.
+  let target: { x0: number; x: number; mod: boolean; range: number | null; base: { hue: number; saturation: number }; done: boolean } | null = null;
+  function targetApply(final: boolean) {
+    const tg = target;
+    if (!tg || tg.range == null) return;
+    const dx = (tg.x - tg.x0) * 0.5;
+    const key = tg.mod ? "hue" : "saturation";
+    const lim = tg.mod ? 180 : 100;
+    const val = Math.round(Math.max(-lim, Math.min(lim, tg.base[key] + dx)));
+    const ranges = snap(v.ranges) as Record<string, number>[];
+    ranges[tg.range] = { ...ranges[tg.range], [key]: val };
+    patch({ ranges }, final);
+  }
+  const pickHandlers = {
+    down: async (p: PickPoint) => {
+      const mode = armed;
+      if (!mode) return;
+      if (mode.startsWith("lv-")) {
+        const c = await sample(p.x, p.y);
+        if (!c) return;
+        const next = levelsFromSample(snap(v) as unknown as LevelsValue, c, mode.slice(3) as Dropper);
+        patch({ red: next.red, green: next.green, blue: next.blue }, true);
+        return;
+      }
+      const tg: typeof target = mode === "hs-target" ? { x0: p.clientX, x: p.clientX, mod: p.mod, range: null, base: { hue: 0, saturation: 0 }, done: false } : null;
+      if (tg) target = tg;
+      const hue = await hueAt(p);
+      if (hue == null) {
+        if (tg) target = null;
+        return;
+      }
+      const range = hsRange < 0 ? bestRange(hsBands, hue) : hsRange;
+      hsRange = range;
+      if (tg) {
+        const r = v.ranges[range];
+        tg.range = range;
+        tg.base = { hue: r.hue, saturation: r.saturation };
+        if (tg.done) {
+          targetApply(true);
+          target = null;
+        } else if (tg.x !== tg.x0) targetApply(false);
+        return;
+      }
+      const band = hsBands[range];
+      setBand(range, mode === "hs-sample" ? centered(band, hue) : mode === "hs-add" ? include(band, hue) : exclude(band, hue), true);
+    },
+    move: (p: PickPoint) => {
+      if (!target) return;
+      target.x = p.clientX;
+      target.mod = p.mod;
+      targetApply(false);
+    },
+    up: (p: PickPoint) => {
+      if (!target) return;
+      target.x = p.clientX;
+      if (target.range == null) {
+        target.done = true;
+        return;
+      }
+      targetApply(true);
+      target = null;
+    },
+  };
+  $effect(() => {
+    const mode = armed;
+    if (!mode) return;
+    return untrack(() => armCanvasPick(pickHandlers, mode === "hs-target" ? "ew-resize" : "crosshair"));
+  });
+  $effect(() => {
+    if (!armed) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        armed = null;
+      }
+    };
+    window.addEventListener("keydown", esc, true);
+    return () => window.removeEventListener("keydown", esc, true);
+  });
+  // A different kind (or colorize) disarms the droppers.
+  const armScope = $derived(`${v.kind}:${!!v.colorize}`);
+  $effect(() => {
+    void armScope;
+    armed = null;
+  });
 
   // ---- Color balance
   let tone = $state<"shadows" | "midtones" | "highlights">("midtones");
@@ -226,6 +354,14 @@
       <span class="grow"></span>
       <button type="button" class="oa-btn oa-btn--secondary small" disabled={!histogram} onclick={autoLevels}>{t("Auto")}</button>
     </div>
+    <div class="ops-row droppers" role="group" aria-label={t("Eyedroppers")}>
+      {#each [["black", t("Sample in image to set black point")], ["gray", t("Sample in image to set gray point")], ["white", t("Sample in image to set white point")]] as [d, label] (d)}
+        <IconButton size="sm" {label} pressed={armed === `lv-${d}`} testid="levels-dropper-{d}" onclick={() => toggleArm(`lv-${d}` as Armed)}>
+          <span class="dropper"><Pipette size={14} /><span class="dot {d}"></span></span>
+        </IconButton>
+      {/each}
+      {#if armed?.startsWith("lv-")}<span class="ops-note hint">{t("Click the image. Esc stops.")}</span>{/if}
+    </div>
     <Histogram data={histogram} mode={histMode} height={96} />
     <LevelsTrack
       label={t("Input")}
@@ -310,11 +446,27 @@
     <Slider label={t("Vibrance")} value={v.vibrance} min={-100} max={100} defaultValue={0} oninput={(x) => patch({ vibrance: x }, false)} onchange={(x) => patch({ vibrance: x }, true)} />
     <Slider label={t("Saturation")} value={v.saturation} min={-100} max={100} defaultValue={0} oninput={(x) => patch({ saturation: x }, false)} onchange={(x) => patch({ saturation: x }, true)} />
   {:else if v.kind === "hue-saturation"}
-    <div class="ops-row">
-      <span class="ops-label">{t("Range")}</span>
-      <span class="grow">
-        <Select ariaLabel={t("Range")} value={hsRange} disabled={v.colorize} options={[{ value: -1, label: t("Master") }, null, ...RANGES.map((r, i) => ({ value: i, label: r }))]} onchange={(r) => (hsRange = r)} testid="hue-range" />
-      </span>
+    <div class="ops-row swatches" role="radiogroup" aria-label={t("Range")} data-testid="hue-range">
+      <IconButton size="sm" label={t("Drag in the image to change saturation. Hold Ctrl or ⌘ to change hue.")} pressed={armed === "hs-target"} disabled={v.colorize} testid="hue-target" onclick={() => toggleArm("hs-target")}>
+        <Pointer size={14} />
+      </IconButton>
+      <button type="button" role="radio" aria-checked={hsRange < 0} aria-label={t("Master")} title={t("Master")} class="swatch master" class:on={hsRange < 0} disabled={v.colorize} data-testid="hue-range-master" onclick={() => (hsRange = -1)}></button>
+      {#each RANGES as label, i (i)}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={hsRange === i}
+          aria-label={label}
+          title={label}
+          class="swatch"
+          class:on={hsRange === i}
+          class:edited={v.ranges?.[i] && (v.ranges[i].hue || v.ranges[i].saturation || v.ranges[i].lightness)}
+          style:--sw="hsl({RANGE_HUES[i]} 100% 50%)"
+          disabled={v.colorize}
+          data-testid="hue-range-{i}"
+          onclick={() => (hsRange = i)}
+        ></button>
+      {/each}
     </div>
     {#if v.colorize}
       <Slider label={t("Hue")} value={v.colorize_hue} min={0} max={360} defaultValue={0} track="linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)" oninput={(x) => patch({ colorize_hue: x }, false)} onchange={(x) => patch({ colorize_hue: x }, true)} />
@@ -323,16 +475,35 @@
     {:else if hsCur}
       <Slider label={t("Hue")} value={hsCur.hue} min={-180} max={180} defaultValue={0} testid="hue-hue" track="linear-gradient(to right,#0ff,#00f,#f0f,#f00,#ff0,#0f0,#0ff)" oninput={(x) => setHs("hue", x, false)} onchange={(x) => setHs("hue", x, true)} />
       <Slider label={t("Saturation")} value={hsCur.saturation} min={-100} max={100} defaultValue={0} testid="hue-saturation" track="linear-gradient(to right,#808080,#f33)" oninput={(x) => setHs("saturation", x, false)} onchange={(x) => setHs("saturation", x, true)} />
-      <Slider label={t("Lightness")} value={hsCur.lightness} min={-100} max={100} defaultValue={0} track="linear-gradient(to right,#000,#888,#fff)" oninput={(x) => setHs("lightness", x, false)} onchange={(x) => setHs("lightness", x, true)} />
+      <Slider label={t("Lightness")} value={hsCur.lightness} min={-100} max={100} defaultValue={0} testid="hue-lightness" track="linear-gradient(to right,#000,#888,#fff)" oninput={(x) => setHs("lightness", x, false)} onchange={(x) => setHs("lightness", x, true)} />
     {/if}
-    <label class="ops-check"><input type="checkbox" checked={v.colorize} onchange={(e) => patch({ colorize: e.currentTarget.checked }, true)} />{t("Colorize")}</label>
-    <div class="rainbow" aria-hidden="true">
-      <span style:background="linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></span>
-      <span
-        style:background="linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"
-        style:filter="hue-rotate({v.colorize ? 0 : (hsCur?.hue ?? 0)}deg) saturate({v.colorize ? 0.3 : 1 + (hsCur?.saturation ?? 0) / 100})"
-      ></span>
+    <div class="ops-row">
+      <label class="ops-check"><input type="checkbox" checked={v.colorize} onchange={(e) => patch({ colorize: e.currentTarget.checked }, true)} />{t("Colorize")}</label>
+      <span class="grow"></span>
+      <IconButton size="sm" label={t("Sample a colour range from the image")} pressed={armed === "hs-sample"} disabled={v.colorize} testid="hue-dropper-sample" onclick={() => toggleArm("hs-sample")}>
+        <Pipette size={14} />
+      </IconButton>
+      <IconButton size="sm" label={t("Add to the range")} pressed={armed === "hs-add"} disabled={v.colorize} testid="hue-dropper-add" onclick={() => toggleArm("hs-add")}>
+        <span class="dropper"><Pipette size={14} /><Plus size={9} class="badge" /></span>
+      </IconButton>
+      <IconButton size="sm" label={t("Subtract from the range")} pressed={armed === "hs-remove"} disabled={v.colorize} testid="hue-dropper-remove" onclick={() => toggleArm("hs-remove")}>
+        <span class="dropper"><Pipette size={14} /><Minus size={9} class="badge" /></span>
+      </IconButton>
+      <button
+        type="button"
+        class="oa-btn oa-btn--secondary small"
+        disabled={v.colorize || hsRange < 0}
+        data-testid="hue-invert"
+        title={t("Swap the range for every hue outside it")}
+        onclick={() => setBand(hsRange, invert(hsBands[hsRange]), true)}>{t("Invert")}</button
+      >
     </div>
+    {#if armed?.startsWith("hs-")}<p class="ops-note hint">{armed === "hs-target" ? t("Drag left or right in the image. Esc stops.") : t("Click a colour in the image. Esc stops.")}</p>{/if}
+    {#if pickNote}<p class="ops-note hint" role="status">{pickNote}</p>{/if}
+    {#if !v.colorize}
+      <span class="ops-section-title">{t("Before – after")}</span>
+    {/if}
+    <HueBandBar params={hsParams} band={v.colorize || hsRange < 0 ? null : hsBands[hsRange]} rangeKey={v.colorize ? -2 : hsRange} onchange={(b, final) => setBand(hsRange, b, final)} />
   {:else if v.kind === "color-balance"}
     <SegmentedControl
       ariaLabel={t("Tone")}
@@ -458,6 +629,14 @@
         {/each}
       </div>
     {/each}
+  {:else if v.kind === "grain"}
+    <Slider label={t("Amount")} value={v.amount} min={0} max={100} defaultValue={25} testid="grain-amount" oninput={(x) => patch({ amount: x }, false)} onchange={(x) => patch({ amount: x }, true)} />
+    <Slider label={t("Size")} value={v.size} min={0.5} max={20} step={0.1} unit="px" defaultValue={1.5} testid="grain-size" oninput={(x) => patch({ size: x }, false)} onchange={(x) => patch({ size: x }, true)} />
+    <Slider label={t("Roughness")} value={v.roughness} min={0} max={100} defaultValue={50} testid="grain-roughness" oninput={(x) => patch({ roughness: x }, false)} onchange={(x) => patch({ roughness: x }, true)} />
+    <div class="ops-row">
+      <span class="ops-note hint">{t("The grain is fixed to the image, so it looks the same at every zoom and in the export.")}</span>
+      <button type="button" class="oa-btn oa-btn--secondary small" data-testid="grain-reseed" onclick={() => patch({ seed: newSeed() }, true)}>{t("New pattern")}</button>
+    </div>
   {:else if v.kind === "color-lookup"}
     <div class="ops-row">
       <span class="ops-label">{t("LUT")}</span>
@@ -495,15 +674,73 @@
     display: flex;
     justify-content: space-between;
   }
-  .rainbow {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin-top: 4px;
+  .swatches {
+    gap: 6px;
   }
-  .rainbow span {
-    height: 6px;
-    border-radius: 1px;
+  .swatch {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 50%;
+    border: var(--border-width) solid var(--border-hairline);
+    background: var(--sw);
+    cursor: pointer;
+    position: relative;
+  }
+  .swatch.master {
+    background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  }
+  .swatch.on {
+    outline: 2px solid var(--text-strong);
+    outline-offset: 1px;
+  }
+  .swatch.edited::after {
+    content: "";
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--text-strong);
+  }
+  .swatch:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .droppers {
+    gap: 2px;
+  }
+  .dropper {
+    position: relative;
+    display: inline-flex;
+  }
+  .dropper :global(.badge) {
+    position: absolute;
+    right: -5px;
+    bottom: -4px;
+  }
+  .dot {
+    position: absolute;
+    right: -4px;
+    bottom: -3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1px solid var(--text-muted);
+  }
+  .dot.black {
+    background: #000;
+  }
+  .dot.gray {
+    background: #808080;
+  }
+  .dot.white {
+    background: #fff;
+  }
+  .hint {
+    margin: 0;
+    font: var(--type-caption);
   }
   .total {
     margin: -2px 0 0;

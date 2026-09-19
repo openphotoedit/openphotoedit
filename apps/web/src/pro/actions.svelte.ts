@@ -1,11 +1,14 @@
 // Every Pro command in one registry: the menu bar reads labels, shortcuts,
 // enabled and checked states from here, and the shortcut handler runs them.
 
-import { allLayers } from "../engine/types";
+import { allLayers, BLEND_MODES, type BlendMode, type LayerId, findLayer } from "../engine/types";
 import { editor } from "../lib/editor.svelte";
 import { t } from "../lib/i18n";
 import { openFile, pickFiles, exportBlob, saveBlob } from "../lib/io";
 import * as ai from "../lib/ai";
+import { snap, toggleSnap } from "../lib/snap.svelte";
+import { TOOLS } from "../tools/registry";
+import { toolSettings } from "../tools/settings.svelte";
 import { matchShortcut } from "../ui/platform";
 import { SEP, tidy, type MenuBarMenu, type MenuEntry, type MenuItem } from "../ui/menu";
 import { paintTarget } from "../ui/paint-target.svelte";
@@ -144,15 +147,33 @@ async function toggleLastState() {
 }
 
 async function transformLayer(kind: "rot180" | "rot90cw" | "rot90ccw" | "fliph" | "flipv") {
-  const a = active();
-  const b = a?.bounds;
-  if (!a || !b) return;
-  const cx = b.x + b.w / 2;
-  const cy = b.y + b.h / 2;
-  const m = { rot180: [-1, 0, 0, -1], rot90cw: [0, 1, -1, 0], rot90ccw: [0, -1, 1, 0], fliph: [-1, 0, 0, 1], flipv: [1, 0, 0, -1] }[kind];
+  const s = editor.summary;
+  if (!s || !active()?.bounds) return;
+  const ids = pro.selection();
+  // Flips go through `transform.flip`, which mirrors the whole selection as
+  // one box about its combined centre, exactly (no resampling).
+  if (kind === "fliph" || kind === "flipv") {
+    await run({ op: "transform.flip", ids, horizontal: kind === "fliph" }, undefined, t("Transform"));
+    return;
+  }
+  // Rotations pivot about the combined bounds of every selected layer, as
+  // Photoshop does, not the active layer's centre.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const id of ids) {
+    const b = findLayer(s.layers, id)?.bounds;
+    if (!b) continue;
+    x0 = Math.min(x0, b.x);
+    y0 = Math.min(y0, b.y);
+    x1 = Math.max(x1, b.x + b.w);
+    y1 = Math.max(y1, b.y + b.h);
+  }
+  if (!Number.isFinite(x0)) return;
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const m = { rot180: [-1, 0, 0, -1], rot90cw: [0, 1, -1, 0], rot90ccw: [0, -1, 1, 0] }[kind];
   const [ma, mb, mc, md] = m;
   const matrix = { a: ma, b: mb, c: mc, d: md, e: cx - ma * cx - mc * cy, f: cy - mb * cx - md * cy };
-  await run({ op: "transform.layer", ids: pro.selection(), matrix }, undefined, t("Transform"));
+  await run({ op: "transform.layer", ids, matrix }, undefined, t("Transform"));
 }
 
 function toggleView(key: "rulers" | "extras" | "pixelGrid" | "showGuides") {
@@ -192,7 +213,14 @@ async function lastFilter() {
   const lf = pro.lastFilter;
   if (!lf) return;
   const a = active();
-  const cmd = buildCommand(lf.def, lf.params, lf.def.op === "filter.clouds" ? { fg: editor.primary, bg: editor.secondary } : {});
+  // Each run of Add Noise gets its own pattern, as Photoshop's does.
+  const extra =
+    lf.def.op === "filter.clouds"
+      ? { fg: editor.primary, bg: editor.secondary }
+      : lf.def.op === "filter.add-noise"
+        ? { seed: crypto.getRandomValues(new Uint32Array(1))[0] }
+        : {};
+  const cmd = buildCommand(lf.def, lf.params, extra);
   if (a?.kind === "smart") await run({ op: "layer.smart-filter-add", id: a.id, filter: cmd }, undefined, lf.def.label);
   else await run(cmd, undefined, lf.def.label);
 }
@@ -212,6 +240,133 @@ function layerStyle(section?: string) {
   const a = active();
   if (!a) return;
   pro.open({ kind: "layer-style", id: a.id, section });
+}
+
+// ---------------------------------------------------------------------------
+// Gestures that send several commands but are one step in History.
+
+/** One undo step for a gesture that sends several commands (see `editor.oneStep`). */
+export function oneStep(label: string, fn: () => Promise<boolean | void>): Promise<boolean> {
+  return editor.oneStep(label, fn);
+}
+
+/**
+ * Photoshop's fill keys: Alt+Backspace fills the selection (or the whole
+ * layer) with the foreground colour, Mod+Backspace with the background
+ * colour; adding Shift keeps the layer's transparent pixels transparent.
+ */
+export async function fillWith(which: "foreground" | "background", preserveTransparency = false) {
+  const a = active();
+  if (!hasDoc() || !a) return;
+  if (a.kind !== "pixel") {
+    editor.toast(t("Select a pixel layer to fill."), "info");
+    return;
+  }
+  const color = $state.snapshot(which === "foreground" ? editor.primary : editor.secondary);
+  const fill = { op: "layer.fill-selection", id: a.id, color };
+  if (!preserveTransparency || a.locks.transparency) {
+    await run(fill, undefined, t("Fill"));
+    return;
+  }
+  // The engine keeps alpha when the layer's transparency is locked, so lock
+  // it for the fill and put the locks back, all as one "Fill" step.
+  const locks = $state.snapshot(a.locks);
+  await oneStep("Fill", async () => {
+    if (!(await run({ op: "layer.props", id: a.id, locks: { ...locks, transparency: true } }))) return false;
+    const r = await run(fill, undefined, t("Fill"));
+    await run({ op: "layer.props", id: a.id, locks });
+    return !!r;
+  });
+}
+
+/** Blend modes in menu order, for Shift+Plus / Shift+Minus. */
+const BLEND_ORDER = BLEND_MODES.filter((m): m is BlendMode => m !== null);
+
+let blendChain: Promise<unknown> = Promise.resolve();
+
+/** Step the active layer's blend mode (the brush's with Brush or Pencil), wrapping. */
+export function stepBlend(dir: 1 | -1) {
+  // Each step reads the mode the previous one set, however fast the keys come.
+  blendChain = blendChain.then(() => stepBlendNow(dir));
+  return blendChain;
+}
+
+async function stepBlendNow(dir: 1 | -1) {
+  if (editor.tool === "brush" || editor.tool === "pencil") {
+    const i = BLEND_ORDER.indexOf(toolSettings.brushBlend);
+    toolSettings.brushBlend = BLEND_ORDER[(i + dir + BLEND_ORDER.length) % BLEND_ORDER.length];
+    return;
+  }
+  const a = active();
+  if (!hasDoc() || !a) return;
+  const group = a.kind === "group";
+  const list: string[] = group ? ["pass-through", ...BLEND_ORDER] : BLEND_ORDER;
+  const cur = group && a.passThrough ? "pass-through" : a.blend;
+  const next = list[(Math.max(0, list.indexOf(cur)) + dir + list.length) % list.length];
+  if (next === "pass-through") await run({ op: "layer.props", id: a.id, pass_through: true });
+  else await run({ op: "layer.props", id: a.id, blend: next, ...(group ? { pass_through: false } : {}) });
+}
+
+/** Tools whose own opacity (or strength) takes the number keys on the canvas. */
+const PAINT_DIGIT_TOOLS = new Set(["brush", "pencil", "eraser", "clone", "heal", "dodge", "burn", "sponge", "blur-brush", "sharpen-brush", "smudge"]);
+let lastDigit: { n: number; at: number } | null = null;
+
+/**
+ * Number keys: 1 = 10% … 9 = 90%, 0 = 100%; two digits typed quickly give
+ * an exact value (4 then 5 = 45%, 0 then 5 = 5%). Sets the gradient or
+ * bucket opacity with those tools and the selected layers' opacity with
+ * every other non-painting tool. Returns false for painting tools, whose
+ * own key handler takes the digit.
+ */
+export function typeOpacityDigit(n: number, now = performance.now()): boolean {
+  if (PAINT_DIGIT_TOOLS.has(editor.tool)) return false;
+  let value = n === 0 ? 1 : n / 10;
+  if (lastDigit && now - lastDigit.at < 600) {
+    value = (lastDigit.n * 10 + n) / 100;
+    lastDigit = null;
+  } else {
+    lastDigit = { n, at: now };
+  }
+  if (editor.tool === "gradient") toolSettings.gradientOpacity = value;
+  else if (editor.tool === "bucket") toolSettings.bucketOpacity = value;
+  else void setLayerOpacity(value);
+  return true;
+}
+
+let opacityChain: Promise<unknown> = Promise.resolve();
+
+function setLayerOpacity(value: number) {
+  // Keys can arrive faster than the worker answers; keep them in order.
+  opacityChain = opacityChain.then(async () => {
+    const ids = pro.selection().filter((id) => allLayers(editor.summary?.layers ?? []).some((l) => l.id === id));
+    if (!hasDoc() || !ids.length) return;
+    if (ids.length === 1) {
+      // Opacity edits of one layer merge, so "4" then "5" is one step.
+      await run({ op: "layer.props", id: ids[0], opacity: value }, undefined, t("Opacity"));
+      return;
+    }
+    await oneStep("Opacity", async () => {
+      for (const id of ids) await run({ op: "layer.props", id, opacity: value }, undefined, t("Opacity"));
+    });
+  });
+  return opacityChain;
+}
+
+/** Load a layer mask (white = selected) as the selection, as Photoshop's Cmd-click on a mask does. */
+export async function loadMaskSelection(id: LayerId, mode: "replace" | "add" | "subtract" | "intersect" = "replace") {
+  const s = editor.summary;
+  if (!s) return;
+  try {
+    const bytes = await editor.engine.call<Uint8Array>("mask_region", id, 0, 0, s.width, s.height);
+    await run({ op: "select.mask", x: 0, y: 0, width: s.width, height: s.height, mode, label: t("Load Selection") }, bytes);
+  } catch (e) {
+    editor.error(e);
+  }
+}
+
+/** Selection mode from Photoshop's modifiers on a thumbnail Cmd-click. */
+export function selectionMode(e: { shiftKey: boolean; altKey: boolean }): "replace" | "add" | "subtract" | "intersect" {
+  return e.shiftKey && e.altKey ? "intersect" : e.shiftKey ? "add" : e.altKey ? "subtract" : "replace";
 }
 
 export const ACTIONS: Record<string, Action> = {};
@@ -272,6 +427,11 @@ def({ id: "edit.paste", label: t("Paste"), shortcut: "Mod+V", passive: true, run
 def({ id: "edit.paste-in-place", label: t("Paste in Place"), shortcut: "Shift+Mod+V", run: () => paste(true), enabled: hasDoc });
 def({ id: "edit.clear", label: t("Clear"), shortcut: "Delete", run: () => run({ op: "layer.clear" }, undefined, t("Clear")), enabled: () => hasSel() && pixelish() });
 def({ id: "edit.fill", label: t("Fill…"), shortcut: "Shift+F5", run: () => pro.open({ kind: "fill" }), enabled: () => hasDoc() && activeIs("pixel") });
+// "Delete" in a shortcut matches both Backspace and Delete (ui/platform.ts).
+def({ id: "edit.fill-foreground", label: t("Fill with Foreground Colour"), shortcut: "Alt+Delete", run: () => fillWith("foreground"), enabled: hasDoc });
+def({ id: "edit.fill-background", label: t("Fill with Background Colour"), shortcut: "Mod+Delete", run: () => fillWith("background"), enabled: hasDoc });
+def({ id: "edit.fill-foreground-keep", label: t("Fill with Foreground, Preserve Transparency"), shortcut: "Shift+Alt+Delete", run: () => fillWith("foreground", true), enabled: hasDoc });
+def({ id: "edit.fill-background-keep", label: t("Fill with Background, Preserve Transparency"), shortcut: "Shift+Mod+Delete", run: () => fillWith("background", true), enabled: hasDoc });
 def({
   id: "edit.content-aware-fill",
   label: t("Content-Aware Fill"),
@@ -438,6 +598,14 @@ def({
 def({ id: "filter.last", label: () => (pro.lastFilter ? t("Last Filter: {name}", { name: pro.lastFilter.def.label }) : t("Last Filter")), shortcut: "Alt+Mod+F", run: lastFilter, enabled: () => hasDoc() && !!pro.lastFilter });
 def({ id: "filter.convert-smart", label: t("Convert for Smart Filters"), run: () => ops.convertToSmart([active()!.id]), enabled: () => hasDoc() && activeIs("pixel", "text", "shape") });
 for (const f of FILTERS) def({ id: `filter.${f.op}`, label: f.params.length ? `${f.label}…` : f.label, run: () => runFilter(f), enabled: () => hasDoc() && (pixelish() || activeIs("text", "shape")) });
+def({
+  id: "filter.liquify",
+  label: t("Liquify…"),
+  shortcut: "Shift+Mod+X",
+  run: () => selectTool("liquify"),
+  enabled: () => hasDoc() && !!TOOLS["liquify"],
+  hint: () => (hasDoc() ? t("Select a pixel layer to liquify.") : t("Open a document first.")),
+});
 def({ id: "filter.lens-correct", label: t("Lens Correction…"), run: () => runFilter(LENS_CORRECTION), enabled: () => hasDoc() && pixelish() });
 def({ id: "ai.remove-bg", label: t("Remove Background"), run: () => runAi(t("Remove background"), ai.removeBackground), enabled: hasDoc });
 def({ id: "ai.upscale2", label: t("Upscale 2×"), run: () => runAi(t("Upscale"), () => ai.upscale(2)), enabled: hasDoc });
@@ -469,6 +637,7 @@ def({ id: "view.fit", label: t("Fit on Screen"), shortcut: "Mod+0", run: () => e
 def({ id: "view.100", label: t("100%"), shortcut: "Mod+1", run: () => editor.zoomAt(1), enabled: hasDoc });
 def({ id: "view.200", label: t("200%"), run: () => editor.zoomAt(2), enabled: hasDoc });
 def({ id: "view.extras", label: t("Extras"), shortcut: "Mod+H", run: () => toggleView("extras"), checked: () => pro.layout.extras });
+def({ id: "view.snap", label: t("Snap"), shortcut: "Shift+Mod+;", run: toggleSnap, checked: () => snap.enabled });
 def({ id: "view.pixel-grid", label: t("Pixel Grid"), run: () => toggleView("pixelGrid"), checked: () => pro.layout.pixelGrid });
 def({ id: "view.guides", label: t("Guides"), shortcut: "Mod+;", run: () => toggleView("showGuides"), checked: () => pro.layout.showGuides });
 def({ id: "view.rulers", label: t("Rulers"), shortcut: "Mod+R", run: () => toggleView("rulers"), checked: () => pro.layout.rulers });
@@ -576,6 +745,8 @@ export const MENUS: MenuBarMenu[] = [
         item("edit.clear"),
         SEP,
         item("edit.fill"),
+        item("edit.fill-foreground"),
+        item("edit.fill-background"),
         { label: t("Stroke…"), disabled: true, hint: t("Stroke a selection with a layer style Stroke for now.") },
         item("edit.content-aware-fill"),
         SEP,
@@ -718,7 +889,7 @@ export const MENUS: MenuBarMenu[] = [
         }),
         ACTIONS["image.adjust.develop"] ? item("image.adjust.develop") : null,
         item("filter.lens-correct"),
-        { label: t("Liquify…"), disabled: true, hint: t("Liquify arrives with the transform workstream's brush.") },
+        item("filter.liquify"),
         SEP,
         ...FILTER_GROUPS.map((g) => sub(g.label, () => FILTERS.filter((f) => f.group === g.id).map((f) => item(`filter.${f.op}`)), { disabled: !hasDoc(), testid: `menu-filter-${g.id}` })),
       ]),
@@ -736,6 +907,8 @@ export const MENUS: MenuBarMenu[] = [
         SEP,
         item("view.extras"),
         sub(t("Show"), () => [item("view.pixel-grid"), item("view.guides")]),
+        SEP,
+        item("view.snap"),
         SEP,
         item("view.rulers"),
         SEP,

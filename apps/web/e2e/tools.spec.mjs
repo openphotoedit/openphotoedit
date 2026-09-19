@@ -125,10 +125,12 @@ const tests = {
     // Straighten by rotating outside the box, then apply.
     await drag(page, [s.width + 150, s.height / 2], [s.width + 150, s.height / 2 + 250]);
     await page.screenshot({ path: `${OUT}/crop-rotate.png` });
+    const n0 = s.history.undo.length;
     await page.getByTestId("crop-apply").click();
     await idle(page, 1500);
     const s2 = await summary(page);
-    check("rotated crop applies", s2.history.undo.includes("Straighten") && s2.width < s.width, `${s2.width}×${s2.height}; ${s2.history.undo.slice(-2).join(", ")}`);
+    // Straighten and crop land as one "Crop" undo step.
+    check("rotated crop applies", s2.history.undo.length === n0 + 1 && s2.history.undo.at(-1) === "Crop" && s2.width < s.width, `${s2.width}×${s2.height}; ${s2.history.undo.slice(-2).join(", ")}`);
     await page.screenshot({ path: `${OUT}/crop-after.png` });
     if (logs.length) console.log(logs.join("\n"));
     await page.close();
@@ -167,6 +169,9 @@ const tests = {
     const p = await at(page, 400, 2400);
     await page.mouse.click(p.x, p.y);
     await page.waitForSelector('[data-testid="text-editor"]');
+    // The editor takes focus one animation frame after it mounts
+    // (TextEditorOverlay.svelte); keys sent before that are lost.
+    await page.waitForFunction(() => document.activeElement?.closest('[data-testid="text-editor"]'));
     await page.keyboard.type("Hello from the tools");
     await page.evaluate(() => {
       window.__ops.toolSettings.textBackgroundOn = true;
@@ -183,6 +188,7 @@ const tests = {
     const q = await at(page, 600, 2450);
     await page.mouse.click(q.x, q.y);
     await page.waitForSelector('[data-testid="text-editor"]');
+    await page.waitForFunction(() => document.activeElement?.closest('[data-testid="text-editor"]'));
     await page.keyboard.press("End");
     await page.keyboard.type("!");
     await page.keyboard.press("Meta+Enter");

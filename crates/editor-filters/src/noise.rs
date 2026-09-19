@@ -7,9 +7,11 @@ use crate::util::{hash3, to_u8, unit, Frame};
 // ---------------------------------------------------------------------------
 // Add Noise
 
-/// Photoshop's Add Noise. Uniform noise spans ±`amount`% of half the range;
-/// Gaussian noise has the same spread as a standard deviation of half that,
-/// so its tails reach further, as in Photoshop. The noise is a function of
+/// Photoshop's Add Noise. Uniform noise spans ±`amount`% of half the range
+/// (sd = spread/√3); Gaussian noise has a standard deviation of ⅔ of that
+/// spread, so at the same amount it reads stronger than Uniform, as it does
+/// in Photoshop (calibration from Compositor's NoisePixels.c, MIT). At
+/// amount 10: uniform sd 7.36, Gaussian sd 8.50. The noise is a function of
 /// document position, so it is identical however the image is tiled.
 pub fn add(buf: &mut [u8], frame: &Frame, amount: f32, gaussian: bool, mono: bool, seed: u64) {
     if amount <= 0.0 {
@@ -21,7 +23,7 @@ pub fn add(buf: &mut [u8], frame: &Frame, amount: f32, gaussian: bool, mono: boo
         if gaussian {
             let u1 = unit(hash3(x, y, s)).max(1e-7);
             let u2 = unit(hash3(x, y, s ^ 0xA5A5_5A5A));
-            (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos() * amp * 0.5
+            (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos() * amp * (2.0 / 3.0)
         } else {
             (unit(hash3(x, y, s)) * 2.0 - 1.0) * amp
         }
@@ -430,5 +432,39 @@ pub fn min_max(buf: &mut [u8], w: usize, h: usize, r: usize, is_max: bool) {
                 buf[(y * w + x) * 4 + c] = out[y];
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod add_noise_tests {
+    use super::*;
+
+    fn run(gaussian: bool, seed: u64) -> Vec<f64> {
+        let (w, h) = (256usize, 256usize);
+        let mut buf = [128u8, 128, 128, 255].repeat(w * h);
+        let r = editor_core::geom::Rect::new(0, 0, w as i32, h as i32);
+        let frame = Frame { w, h, outer: r, inner: r, canvas: r };
+        add(&mut buf, &frame, 10.0, gaussian, true, seed);
+        buf.chunks_exact(4).map(|p| p[0] as f64 - 128.0).collect()
+    }
+    fn sd(v: &[f64]) -> f64 {
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn gaussian_is_stronger_than_uniform() {
+        let (u, g) = (sd(&run(false, 1)), sd(&run(true, 1)));
+        assert!((u - 7.36).abs() < 0.2, "uniform sd {u}");
+        assert!((g - 8.50).abs() < 0.3, "gaussian sd {g}");
+    }
+
+    #[test]
+    fn different_seeds_are_uncorrelated() {
+        let (a, b) = (run(true, 1), run(true, 2));
+        let (ma, mb) = (a.iter().sum::<f64>() / a.len() as f64, b.iter().sum::<f64>() / b.len() as f64);
+        let cov: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum::<f64>() / a.len() as f64;
+        let corr = cov / (sd(&a) * sd(&b));
+        assert!(corr.abs() < 0.05, "corr {corr}");
     }
 }

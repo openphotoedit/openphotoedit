@@ -70,7 +70,7 @@ impl Tool {
     /// Tools that act on the current pixels dab by dab instead of through
     /// the stroke's coverage buffer.
     fn direct(self) -> bool {
-        matches!(self, Tool::Blur | Tool::Sharpen | Tool::Smudge)
+        matches!(self, Tool::Smudge)
     }
 }
 
@@ -84,6 +84,10 @@ pub struct Source {
 
 fn half() -> f32 {
     0.5
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,6 +116,10 @@ pub struct StrokeCmd {
     /// Colour the eraser paints on a layer whose transparency is locked.
     #[serde(default)]
     pub background: Option<Rgba8>,
+    /// Follow a centripetal Catmull–Rom curve through the points instead of
+    /// straight chords (smudge always uses chords).
+    #[serde(default = "yes")]
+    pub smooth: bool,
 }
 
 pub fn stroke_key(v: &Option<Value>) -> Option<String> {
@@ -205,6 +213,21 @@ struct Stroke {
     field: Option<Tiles>,
     source: Source,
     tick: u64,
+    /// Coverage under the provisional tail (the newest curve piece) from
+    /// before it was drawn, restored when the next segment arrives.
+    tail: Option<(Rect, Vec<f32>)>,
+    /// Blur/sharpen: the snapshot blurred once per stroke, per tile.
+    blur: Option<BlurCache>,
+}
+
+/// The stroke's snapshot blurred with one σ, computed lazily per 256² tile
+/// (premultiplied RGBA 0..1). Painting mixes toward it through the stroke's
+/// coverage, so the result depends on where the stroke went, not on how the
+/// pointer path was split into segments.
+struct BlurCache {
+    sigma: f32,
+    tiles: Tiles,
+    done: Vec<bool>,
 }
 
 static STROKES: LazyLock<Mutex<HashMap<String, Stroke>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -240,20 +263,40 @@ pub fn stroke(doc: &mut Document, cmd: StrokeCmd) -> Result<Applied> {
         field: if cmd.tool == Tool::Heal { Some(Tiles::new(doc.width, doc.height, 3)) } else { None },
         source: cmd.source.unwrap_or_default(),
         tick,
+        tail: None,
+        blur: match cmd.tool {
+            Tool::Blur => Some(BlurCache::new(doc, blur_sigma(cmd.brush.size))),
+            Tool::Sharpen => Some(BlurCache::new(doc, 1.0)),
+            _ => None,
+        },
     });
     st.tick = tick;
 
-    let dabs = cmd.brush.walk(&mut st.path, &cmd.points);
+    let (dabs, tail) = if cmd.tool.direct() || !cmd.smooth { (cmd.brush.walk(&mut st.path, &cmd.points), Vec::new()) } else { cmd.brush.walk_smooth(&mut st.path, &cmd.points) };
     let aliased = cmd.tool == Tool::Pencil;
-    let stamps: Vec<(Dab, Stamp)> = dabs.iter().map(|d| (*d, cmd.brush.stamp(d, aliased))).collect();
-    let dirty = stamps.iter().fold(Rect::empty(), |acc, (_, s)| acc.union(&s.rect)).intersect(&canvas(doc));
+    let stamp = |d: &Dab| {
+        // Smudge picks up and lays down dab by dab: plain discs.
+        let d = if cmd.tool.direct() { Dab { from: None, ..*d } } else { *d };
+        (d, cmd.brush.stamp(&d, aliased))
+    };
+    let stamps: Vec<(Dab, Stamp)> = dabs.iter().map(stamp).collect();
+    let tail: Vec<(Dab, Stamp)> = tail.iter().map(stamp).collect();
+    // Take back the previous provisional tail: its area is recomposited.
+    let restored = match st.tail.take() {
+        Some((rect, cov)) => {
+            st.cover.write(rect, &cov);
+            rect
+        }
+        None => Rect::empty(),
+    };
+    let dirty = stamps.iter().chain(&tail).fold(restored, |acc, (_, s)| acc.union(&s.rect)).intersect(&canvas(doc));
 
     let result = if dirty.is_empty() {
         Ok(Rect::empty())
     } else if cmd.tool.direct() {
         direct(doc, id, &cmd, &mut st, &stamps, dirty)
     } else {
-        buffered(doc, id, &cmd, &mut st, &stamps, dirty)
+        buffered(doc, id, &cmd, &mut st, &stamps, &tail, dirty)
     };
     let written = result?;
     st.signature = surface::signature(doc, id, cmd.target);
@@ -298,8 +341,63 @@ fn stamp_cap(cmd: &StrokeCmd, dab: &Dab) -> (f32, f32) {
         Tool::Dodge | Tool::Burn => cap *= cmd.exposure.clamp(0.0, 1.0),
         _ => {}
     }
+    if matches!(cmd.tool, Tool::Blur | Tool::Sharpen) {
+        cap *= cmd.strength.clamp(0.0, 1.0);
+    }
     let flow = if cmd.tool == Tool::Pencil { 1.0 } else { b.flow.clamp(0.0, 1.0) };
     (cap, flow)
+}
+
+/// Blur tool radius: grows with the brush (their σ = d/10, clamped).
+fn blur_sigma(size: f32) -> f32 {
+    (size / 10.0).clamp(1.5, 30.0)
+}
+
+impl BlurCache {
+    fn new(doc: &Document, sigma: f32) -> BlurCache {
+        let tiles = Tiles::new(doc.width, doc.height, 4);
+        let n = tiles.tiles.len();
+        BlurCache { sigma, tiles, done: vec![false; n] }
+    }
+
+    /// Blurred snapshot over `rect`, computing the tiles it needs.
+    fn read(&mut self, snapshot: &Document, id: LayerId, target: Target, rect: Rect) -> Result<Vec<f32>> {
+        let mut todo = Vec::new();
+        self.tiles.for_parts(rect, |i, tr, _| todo.push((i, tr)));
+        for (i, tr) in todo {
+            if self.done[i] {
+                continue;
+            }
+            let full = Rect::new(0, 0, self.tiles.w, self.tiles.h);
+            let tr = tr.intersect(&full);
+            // Three box passes approximate the Gaussian: σ² = ((2r+1)² − 1)/4.
+            let r = ((((4.0 * self.sigma * self.sigma + 1.0).sqrt() - 1.0) / 2.0).round() as usize).max(1);
+            let outer = tr.inflate(3 * r as i32 + 1).intersect(&full);
+            let px = surface::read(snapshot, id, target, outer)?;
+            let (ow, oh) = (outer.w as usize, outer.h as usize);
+            let pre = to_premul(&px);
+            let mut out = vec![0f32; ow * oh * 4];
+            let mut chan = vec![0f32; ow * oh];
+            for k in 0..4 {
+                for (j, v) in chan.iter_mut().enumerate() {
+                    *v = pre[j * 4 + k];
+                }
+                editor_core::adjust::box_blur_1ch(&mut chan, ow, oh, r, 3);
+                for (j, v) in chan.iter().enumerate() {
+                    out[j * 4 + k] = *v;
+                }
+            }
+            let mut inner = vec![0f32; tr.area() as usize * 4];
+            for y in 0..tr.h {
+                let s = ((y + tr.y - outer.y) as usize * ow + (tr.x - outer.x) as usize) * 4;
+                let d = y as usize * tr.w as usize * 4;
+                inner[d..d + tr.w as usize * 4].copy_from_slice(&out[s..s + tr.w as usize * 4]);
+            }
+            self.tiles.write(tr, &inner);
+            self.done[i] = true;
+        }
+        Ok(self.tiles.read(rect))
+    }
 }
 
 /// Source pixels for clone/heal over `rect` (destination coordinates).
@@ -313,24 +411,43 @@ fn source_pixels(st: &Stroke, id: LayerId, rect: Rect) -> Result<Vec<u8>> {
     }
 }
 
-fn buffered(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &mut Stroke, stamps: &[(Dab, Stamp)], dirty: Rect) -> Result<Rect> {
-    // Build coverage.
-    let mut cov = st.cover.read(dirty);
-    for (dab, s) in stamps {
-        let (cap, flow) = stamp_cap(cmd, dab);
-        let part = s.rect.intersect(&dirty);
-        for y in part.y..part.bottom() {
-            for x in part.x..part.right() {
-                let a = s.cov[((y - s.rect.y) * s.rect.w + x - s.rect.x) as usize] * flow;
-                if a <= 0.0 {
-                    continue;
-                }
-                let c = &mut cov[((y - dirty.y) * dirty.w + x - dirty.x) as usize];
-                if *c < cap {
-                    *c += (cap - *c) * a;
+#[allow(clippy::too_many_arguments)]
+fn buffered(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &mut Stroke, stamps: &[(Dab, Stamp)], tail: &[(Dab, Stamp)], dirty: Rect) -> Result<Rect> {
+    // Build coverage. Capsules of a hard round tip combine by max, which
+    // traces the exact edge; every other tip builds up by flow toward the
+    // cap, as Photoshop's dabs do.
+    let capsules = cmd.tool != Tool::Pencil && cmd.brush.capsule_tip();
+    let deposit = |cov: &mut [f32], stamps: &[(Dab, Stamp)]| {
+        for (dab, s) in stamps {
+            let (cap, flow) = stamp_cap(cmd, dab);
+            let part = s.rect.intersect(&dirty);
+            for y in part.y..part.bottom() {
+                for x in part.x..part.right() {
+                    let a = s.cov[((y - s.rect.y) * s.rect.w + x - s.rect.x) as usize] * flow;
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    let c = &mut cov[((y - dirty.y) * dirty.w + x - dirty.x) as usize];
+                    if capsules {
+                        *c = c.max(cap * a);
+                    } else if *c < cap {
+                        *c += (cap - *c) * a;
+                    }
                 }
             }
         }
+    };
+    let mut cov = st.cover.read(dirty);
+    deposit(&mut cov, stamps);
+    if !tail.is_empty() {
+        let tr = tail.iter().fold(Rect::empty(), |acc, (_, s)| acc.union(&s.rect)).intersect(&dirty);
+        let mut saved = vec![0f32; tr.area().max(0) as usize];
+        for y in 0..tr.h {
+            let s = ((y + tr.y - dirty.y) * dirty.w + tr.x - dirty.x) as usize;
+            saved[(y * tr.w) as usize..((y + 1) * tr.w) as usize].copy_from_slice(&cov[s..s + tr.w as usize]);
+        }
+        st.tail = Some((tr, saved));
+        deposit(&mut cov, tail);
     }
     st.cover.write(dirty, &cov);
     st.footprint = st.footprint.union(&dirty);
@@ -345,8 +462,12 @@ fn buffered(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &mut Stroke, s
 }
 
 /// Recomposite `rect` from the snapshot through the stroke's coverage.
-fn compose(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &Stroke, rect: Rect) -> Result<()> {
+fn compose(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &mut Stroke, rect: Rect) -> Result<()> {
     let orig = surface::read(&st.snapshot, id, st.target, rect)?;
+    let blurred = match st.blur.as_mut() {
+        Some(b) => b.read(&st.snapshot, id, st.target, rect)?,
+        None => Vec::new(),
+    };
     let cov = st.cover.read(rect);
     let sel = read_selection(doc, rect);
     let has_sel = doc.selection.is_some();
@@ -398,6 +519,23 @@ fn compose(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &Stroke, rect: 
                 for k in 0..3 {
                     d[k] += (s[k] - d[k]) * a;
                 }
+            }
+            Tool::Blur | Tool::Sharpen => {
+                // Premultiplied mix toward the blurred (or unsharp-masked)
+                // snapshot.
+                let p = [d[0] * d[3], d[1] * d[3], d[2] * d[3], d[3]];
+                let b = &blurred[o..o + 4];
+                let mut t = [0f32; 4];
+                if cmd.tool == Tool::Blur {
+                    t.copy_from_slice(b);
+                } else {
+                    t[3] = (p[3] + (p[3] - b[3]) * 1.5).clamp(0.0, 1.0);
+                    for k in 0..3 {
+                        t[k] = (p[k] + (p[k] - b[k]) * 1.5).clamp(0.0, t[3]);
+                    }
+                }
+                let m: [f32; 4] = std::array::from_fn(|k| p[k] + (t[k] - p[k]) * a);
+                d = if m[3] > 0.0 { [m[0] / m[3], m[1] / m[3], m[2] / m[3], m[3]] } else { [0.0; 4] };
             }
             Tool::Clone => {
                 let s = src.as_ref().map_or([0u8; 4], |s| [s[o], s[o + 1], s[o + 2], s[o + 3]]);
@@ -519,83 +657,47 @@ fn from_premul(buf: &[f32]) -> Vec<u8> {
         .collect()
 }
 
-/// Blur, sharpen and smudge work on the current pixels, dab by dab.
+/// Smudge works on the current pixels, dab by dab: it carries colour picked
+/// up along the way.
 fn direct(doc: &mut Document, id: LayerId, cmd: &StrokeCmd, st: &mut Stroke, stamps: &[(Dab, Stamp)], dirty: Rect) -> Result<Rect> {
-    let apron = 2;
-    let outer = dirty.inflate(apron).intersect(&canvas(doc));
+    let outer = dirty;
     let px = surface::read(doc, id, cmd.target, outer)?;
     let mut buf = to_premul(&px);
-    let (ow, oh) = (outer.w as usize, outer.h as usize);
+    let ow = outer.w as usize;
     let sel = read_selection(doc, outer);
     let has_sel = doc.selection.is_some();
     let strength = cmd.strength.clamp(0.0, 1.0);
-    let blurred = if cmd.tool == Tool::Smudge {
-        Vec::new()
-    } else {
-        let mut b = buf.clone();
-        let mut chan = vec![0f32; ow * oh];
-        for k in 0..4 {
-            for (i, v) in chan.iter_mut().enumerate() {
-                *v = buf[i * 4 + k];
-            }
-            editor_core::adjust::box_blur_1ch(&mut chan, ow, oh, 1, 2);
-            for (i, v) in chan.iter().enumerate() {
-                b[i * 4 + k] = *v;
-            }
-        }
-        b
-    };
     for (dab, s) in stamps {
         let p = if cmd.brush.pressure_opacity { dab.pressure } else { 1.0 };
         let k = strength * p;
         let part = s.rect.intersect(&dirty);
-        if cmd.tool == Tool::Smudge {
-            let side = st.pickup.as_ref().map_or((cmd.brush.size.ceil() as i32 + 3).max(3), |p| p.side);
-            let pick = st.pickup.get_or_insert_with(|| Pickup { side, data: vec![0.0; (side * side * 4) as usize], valid: false });
-            let (cx, cy) = (dab.x.round() as i32 - side / 2, dab.y.round() as i32 - side / 2);
-            let first = !pick.valid;
-            for y in part.y..part.bottom() {
-                for x in part.x..part.right() {
-                    let (pxl, pyl) = (x - cx, y - cy);
-                    if pxl < 0 || pyl < 0 || pxl >= side || pyl >= side {
-                        continue;
-                    }
-                    let bi = ((y - outer.y) as usize * ow + (x - outer.x) as usize) * 4;
-                    let pi = (pyl * side + pxl) as usize * 4;
-                    if !first {
-                        let mut a = s.cov[((y - s.rect.y) * s.rect.w + x - s.rect.x) as usize] * k;
-                        if has_sel {
-                            a *= sel[bi / 4] as f32 / 255.0;
-                        }
-                        if a > 0.0 {
-                            for c in 0..4 {
-                                buf[bi + c] += (pick.data[pi + c] - buf[bi + c]) * a;
-                            }
-                        }
-                    }
-                    pick.data[pi..pi + 4].copy_from_slice(&buf[bi..bi + 4]);
+        let side = st.pickup.as_ref().map_or((cmd.brush.size.ceil() as i32 + 3).max(3), |p| p.side);
+        let pick = st.pickup.get_or_insert_with(|| Pickup { side, data: vec![0.0; (side * side * 4) as usize], valid: false });
+        let (cx, cy) = (dab.x.round() as i32 - side / 2, dab.y.round() as i32 - side / 2);
+        let first = !pick.valid;
+        for y in part.y..part.bottom() {
+            for x in part.x..part.right() {
+                let (pxl, pyl) = (x - cx, y - cy);
+                if pxl < 0 || pyl < 0 || pxl >= side || pyl >= side {
+                    continue;
                 }
-            }
-            pick.valid = true;
-        } else {
-            for y in part.y..part.bottom() {
-                for x in part.x..part.right() {
-                    let bi = ((y - outer.y) as usize * ow + (x - outer.x) as usize) * 4;
+                let bi = ((y - outer.y) as usize * ow + (x - outer.x) as usize) * 4;
+                let pi = (pyl * side + pxl) as usize * 4;
+                if !first {
                     let mut a = s.cov[((y - s.rect.y) * s.rect.w + x - s.rect.x) as usize] * k;
                     if has_sel {
                         a *= sel[bi / 4] as f32 / 255.0;
                     }
-                    if a <= 0.0 {
-                        continue;
-                    }
-                    for c in 0..4 {
-                        let target = if cmd.tool == Tool::Blur { blurred[bi + c] } else { (buf[bi + c] + (buf[bi + c] - blurred[bi + c]) * 1.5).clamp(0.0, 1.0) };
-                        let target = if c < 3 { target.min(buf[bi + 3].max(blurred[bi + 3])) } else { target };
-                        buf[bi + c] += (target - buf[bi + c]) * a * if cmd.tool == Tool::Sharpen { 0.5 } else { 1.0 };
+                    if a > 0.0 {
+                        for c in 0..4 {
+                            buf[bi + c] += (pick.data[pi + c] - buf[bi + c]) * a;
+                        }
                     }
                 }
+                pick.data[pi..pi + 4].copy_from_slice(&buf[bi..bi + 4]);
             }
         }
+        pick.valid = true;
     }
     // Write only the inner rectangle.
     let mut inner = vec![0f32; dirty.area() as usize * 4];

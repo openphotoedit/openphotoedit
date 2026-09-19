@@ -7,7 +7,8 @@
 //! `impl Engine` blocks.
 
 use editor_core::geom::Rect;
-use editor_core::layer::LayerId;
+use editor_core::layer::{Layer, LayerId};
+use editor_core::Document;
 use editor_core::render::{render_layer_alone, render_view, to_u8, View};
 use editor_core::Editor;
 use wasm_bindgen::prelude::*;
@@ -117,11 +118,27 @@ impl Engine {
     /// `[{id, width, height, name, current}]` for every open document.
     pub fn documents(&self) -> String {
         let row = |id: u32, ed: &Editor, current: bool| {
-            serde_json::json!({ "id": id, "width": ed.doc.width, "height": ed.doc.height, "name": ed.doc.meta.source_name, "current": current })
+            serde_json::json!({ "id": id, "width": ed.doc.width, "height": ed.doc.height, "name": ed.doc.meta.source_name, "current": current, "layers": ed.doc.layer_count() })
         };
         let mut rows = vec![row(self.doc_id, &self.ed, true)];
         rows.extend(self.parked.iter().map(|(id, ed)| row(*id, ed, false)));
         serde_json::Value::Array(rows).to_string()
+    }
+
+    /// Copy layers from open document `from` into open document `to`, above
+    /// the target's active layer, as one undo step there ("Copy Layers").
+    /// Pixels, masks, effects, adjustment and fill layers, smart objects and
+    /// whole groups come along; the source is untouched. Returns
+    /// `{ids, count}` with the new top-level ids, bottom to top.
+    pub fn copy_layers(&mut self, from: u32, to: u32, ids: Vec<u32>) -> Result<String, JsError> {
+        if from == to {
+            return Err(err("drop the layers on another document's tab"));
+        }
+        // A document clone shares every tile, so this costs almost nothing.
+        let src = self.editor_of(from)?.doc.clone();
+        let dst = self.editor_of_mut(to)?;
+        let new_ids = copy_layers_into(&src, dst, &ids).map_err(err)?;
+        Ok(serde_json::json!({ "ids": new_ids, "count": new_ids.len() }).to_string())
     }
 
     /// Run a command. Returns the result JSON.
@@ -280,5 +297,170 @@ impl Engine {
     /// Encode straight RGBA8 as PNG with the document's resolution.
     pub fn encode_png(&self, rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, JsError> {
         encode::png(rgba, width, height, self.ed.doc.resolution).map_err(err)
+    }
+}
+
+impl Engine {
+    fn editor_of(&self, id: u32) -> Result<&Editor, JsError> {
+        if id == self.doc_id {
+            return Ok(&self.ed);
+        }
+        self.parked.iter().find(|(d, _)| *d == id).map(|(_, e)| e).ok_or_else(|| err(format!("no open document {id}")))
+    }
+
+    fn editor_of_mut(&mut self, id: u32) -> Result<&mut Editor, JsError> {
+        if id == self.doc_id {
+            return Ok(&mut self.ed);
+        }
+        self.parked.iter_mut().find(|(d, _)| *d == id).map(|(_, e)| e).ok_or_else(|| err(format!("no open document {id}")))
+    }
+}
+
+fn fresh_ids(doc: &mut Document, l: &mut Layer) {
+    l.id = doc.alloc_id();
+    l.touch();
+    if let Some(children) = l.children_mut() {
+        for c in children {
+            fresh_ids(doc, c);
+        }
+    }
+}
+
+/// See `Engine::copy_layers`. Layers whose ancestor is also listed come
+/// along inside it. The copies keep their bottom-to-top order and their
+/// placement relative to each other; when the canvases differ in size the
+/// set is re-centred so it lands where it sat on the source canvas. A
+/// clipped layer whose base is not copied is released rather than clipped
+/// to whatever lies below it in the target.
+fn copy_layers_into(src: &Document, dst: &mut Editor, ids: &[LayerId]) -> Result<Vec<LayerId>, String> {
+    if ids.is_empty() {
+        return Err("no layers to copy".into());
+    }
+    for id in ids {
+        if src.find(*id).is_none() {
+            return Err(format!("no layer {id}"));
+        }
+    }
+    let mut picked: Vec<&Layer> = Vec::new();
+    src.walk(&mut |l| {
+        if ids.contains(&l.id) && !ids.iter().any(|a| *a != l.id && src.is_ancestor(*a, l.id)) {
+            picked.push(l);
+        }
+    });
+    let dx = (dst.doc.width as i32 - src.width as i32) / 2;
+    let dy = (dst.doc.height as i32 - src.height as i32) / 2;
+    let before = dst.doc.clone();
+    let mut prev: Option<(editor_core::document::Slot, bool)> = None;
+    let mut anchor = dst.doc.active;
+    let mut out = Vec::new();
+    for l in picked {
+        let slot = src.slot_of(l.id).expect("picked layers exist");
+        let mut c = l.clone();
+        // A clip survives only when its base (or the clipped layer just
+        // below it, whose own base survived) is copied right beneath it.
+        let base_ok = prev.as_ref().is_some_and(|(p, ok)| *ok && p.parent == slot.parent && p.index + 1 == slot.index);
+        if c.clip && !base_ok {
+            c.clip = false;
+        }
+        prev = Some((slot, !l.clip || c.clip));
+        fresh_ids(&mut dst.doc, &mut c);
+        editor_core::ops::layer::offset_layer(&mut c, dx, dy);
+        let id = c.id;
+        dst.doc.insert_above(anchor, c);
+        anchor = Some(id);
+        out.push(id);
+    }
+    dst.doc.active = anchor;
+    dst.history.record(&before, "Copy Layers", None);
+    dst.revision += 1;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor_core::layer::LayerKind;
+    use serde_json::json;
+
+    fn editor(w: u32, h: u32) -> Editor {
+        let mut ed = Editor::new(1, 1);
+        register_domains(&mut ed);
+        ed.exec(json!({ "op": "doc.new", "width": w, "height": h, "background": { "r": 255, "g": 255, "b": 255 } }), &[]).unwrap();
+        ed
+    }
+
+    fn add_red(ed: &mut Editor, name: &str, x: i32, y: i32) -> LayerId {
+        let px: Vec<u8> = [255u8, 0, 0, 255].repeat(4 * 4);
+        let r = ed.exec(json!({ "op": "layer.import", "width": 4, "height": 4, "x": x, "y": y, "name": name }), &px).unwrap();
+        r["data"]["id"].as_u64().unwrap() as LayerId
+    }
+
+    fn names(doc: &Document) -> Vec<String> {
+        let mut v = Vec::new();
+        doc.walk(&mut |l| v.push(l.name.clone()));
+        v
+    }
+
+    #[test]
+    fn copies_layers_with_mask_effects_group_and_adjustment_as_one_step() {
+        let mut src = editor(40, 30);
+        let a = add_red(&mut src, "A", 2, 3);
+        src.exec(json!({ "op": "layer.add-mask", "id": a, "from": "hide-all" }), &[]).unwrap();
+        src.exec(json!({ "op": "layer.set-effects", "id": a, "effects": { "stroke": { "enabled": true } } }), &[]).unwrap();
+        let b = add_red(&mut src, "B", 10, 10);
+        let g = src.exec(json!({ "op": "layer.group", "ids": [b], "name": "G" }), &[]).unwrap()["data"]["id"].as_u64().unwrap() as LayerId;
+        let adj = src.exec(json!({ "op": "layer.add-adjustment", "adjustment": { "kind": "invert" }, "name": "Inv" }), &[]).unwrap()["data"]["id"].as_u64().unwrap() as LayerId;
+        let src_before = names(&src.doc);
+        let src_undo = src.history.undo_labels().len();
+
+        // Same size target with one background layer.
+        let mut dst = editor(40, 30);
+        let dst_undo = dst.history.undo_labels().len();
+        let n0 = dst.doc.layer_count();
+        let ids = copy_layers_into(&src.doc, &mut dst, &[adj, a, g, b]).unwrap();
+        assert_eq!(ids.len(), 3, "b rides along inside its group");
+        // A, G(B), Inv plus B inside the group.
+        assert_eq!(dst.doc.layer_count(), n0 + 4);
+        assert_eq!(dst.history.undo_labels().len(), dst_undo + 1);
+        assert_eq!(dst.history.undo_labels().last().copied(), Some("Copy Layers"));
+        let ca = dst.doc.find(ids[0]).unwrap();
+        assert_eq!(ca.name, "A");
+        assert!(ca.mask.is_some() && ca.effects.is_some());
+        let LayerKind::Pixel(r) = &ca.kind else { panic!("pixel") };
+        assert_eq!((r.x, r.y), (2, 3));
+        let cg = dst.doc.find(ids[1]).unwrap();
+        assert_eq!(cg.children().unwrap()[0].name, "B");
+        assert_ne!(cg.children().unwrap()[0].id, b);
+        assert!(matches!(dst.doc.find(ids[2]).unwrap().kind, LayerKind::Adjustment(_)));
+        assert_eq!(dst.doc.active, Some(ids[2]));
+        // Every id in the target is unique.
+        let mut seen = std::collections::HashSet::new();
+        dst.doc.walk(&mut |l| assert!(seen.insert(l.id)));
+        // The source is untouched.
+        assert_eq!(names(&src.doc), src_before);
+        assert_eq!(src.history.undo_labels().len(), src_undo);
+        // One undo takes the whole copy back.
+        dst.exec(json!({ "op": "edit.undo" }), &[]).unwrap();
+        assert_eq!(dst.doc.layer_count(), n0);
+    }
+
+    #[test]
+    fn recentres_on_a_different_canvas_and_releases_orphan_clips() {
+        let mut src = editor(20, 20);
+        let base = add_red(&mut src, "Base", 0, 0);
+        let c1 = add_red(&mut src, "Clip1", 1, 1);
+        let c2 = add_red(&mut src, "Clip2", 2, 2);
+        src.exec(json!({ "op": "layer.props", "id": c1, "clip": true }), &[]).unwrap();
+        src.exec(json!({ "op": "layer.props", "id": c2, "clip": true }), &[]).unwrap();
+        let mut dst = editor(60, 40);
+        // Base copied: the chain stays clipped.
+        let ids = copy_layers_into(&src.doc, &mut dst, &[base, c1, c2]).unwrap();
+        assert!(!dst.doc.find(ids[0]).unwrap().clip);
+        assert!(dst.doc.find(ids[1]).unwrap().clip && dst.doc.find(ids[2]).unwrap().clip);
+        let LayerKind::Pixel(r) = &dst.doc.find(ids[0]).unwrap().kind else { panic!() };
+        assert_eq!((r.x, r.y), (20, 10));
+        // Base left behind: both clipped layers are released.
+        let ids = copy_layers_into(&src.doc, &mut dst, &[c1, c2]).unwrap();
+        assert!(!dst.doc.find(ids[0]).unwrap().clip && !dst.doc.find(ids[1]).unwrap().clip);
     }
 }

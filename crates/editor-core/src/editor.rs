@@ -77,6 +77,22 @@ impl Editor {
                 self.history.seal();
                 return Ok(json!({ "changed": false }));
             }
+            "edit.begin" => {
+                let label = v.get("label").and_then(Value::as_str);
+                self.history.begin(&self.doc, label);
+                return Ok(json!({ "changed": false }));
+            }
+            "edit.end" => {
+                let label = self.history.end();
+                return Ok(json!({ "changed": label.is_some(), "label": label, "revision": self.revision }));
+            }
+            "edit.cancel" => {
+                let changed = self.history.cancel(&mut self.doc);
+                if changed {
+                    self.revision += 1;
+                }
+                return Ok(json!({ "changed": changed, "revision": self.revision }));
+            }
             "edit.clear-history" => {
                 self.history.clear();
                 return Ok(json!({ "changed": false }));
@@ -202,5 +218,39 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(ed.doc.layer_count(), 1);
         assert!(ed.exec_json(r#"{"op":"nope.nothing"}"#, &[]).is_err());
+    }
+
+    /// Alt-drag duplicate is `layer.duplicate` then `layer.offset`; inside
+    /// `edit.begin` / `edit.end` one undo takes both back.
+    #[test]
+    fn transaction_makes_one_undo_step() {
+        let mut ed = Editor::new(1, 1);
+        ed.exec_json(r#"{"op":"doc.new","width":8,"height":8,"background":{"r":9,"g":9,"b":9}}"#, &[]).unwrap();
+        let base = ed.doc.active.unwrap();
+        ed.exec_json(r#"{"op":"edit.begin","label":"Duplicate and move"}"#, &[]).unwrap();
+        let d = ed.exec_json(&format!(r#"{{"op":"layer.duplicate","ids":[{base}]}}"#), &[]).unwrap();
+        let dup = d["data"]["id"].as_u64().unwrap();
+        for _ in 0..3 {
+            ed.exec_json(&format!(r#"{{"op":"layer.offset","ids":[{dup}],"dx":1,"dy":0}}"#), &[]).unwrap();
+        }
+        // A failing command inside keeps the work so far.
+        assert!(ed.exec_json(r#"{"op":"layer.merge-down","id":999}"#, &[]).is_err());
+        let end = ed.exec_json(r#"{"op":"edit.end"}"#, &[]).unwrap();
+        assert_eq!(end["changed"], true);
+        assert_eq!(ed.doc.layer_count(), 2);
+        assert_eq!(ed.history.undo_labels(), vec!["Duplicate and move"]);
+        ed.exec_json(r#"{"op":"edit.undo"}"#, &[]).unwrap();
+        assert_eq!(ed.doc.layer_count(), 1, "one undo removes the duplicate and its move");
+        assert!(!ed.history.can_undo());
+        ed.exec_json(r#"{"op":"edit.redo"}"#, &[]).unwrap();
+        assert_eq!(ed.doc.layer_count(), 2);
+
+        // Cancel restores the document and records nothing.
+        ed.exec_json(r#"{"op":"edit.begin"}"#, &[]).unwrap();
+        ed.exec_json(&format!(r#"{{"op":"layer.duplicate","ids":[{base}]}}"#), &[]).unwrap();
+        let c = ed.exec_json(r#"{"op":"edit.cancel"}"#, &[]).unwrap();
+        assert_eq!(c["changed"], true);
+        assert_eq!(ed.doc.layer_count(), 2);
+        assert_eq!(ed.history.undo_labels().len(), 1);
     }
 }

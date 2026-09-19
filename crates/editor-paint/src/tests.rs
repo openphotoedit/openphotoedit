@@ -382,3 +382,180 @@ fn gradients_linear_radial_and_reverse() {
     }
     assert!(ed.exec(json!({"op": "paint.gradient", "from": {"x": 0, "y": 0}, "to": {"x": 1, "y": 0}, "stops": []}), &[]).is_err());
 }
+
+// ---- Smoothing, blur brush and hard edge (workstream H3) ----
+
+/// A stroke sent as `segments` calls sharing one id, each call starting at
+/// the previous call's last point.
+fn segmented(ed: &mut Editor, extra: Value, pts: &[(f64, f64)], segments: usize, id: &str) {
+    let n = pts.len();
+    let mut start = 0;
+    for s in 0..segments {
+        let end = ((s + 1) * (n - 1)) / segments;
+        if end < start {
+            continue;
+        }
+        let from = if s == 0 { 0 } else { start + 1 };
+        if from > end {
+            continue;
+        }
+        stroke(ed, extra.clone(), &pts[from..=end], id);
+        start = end;
+    }
+    ed.exec(json!({"op": "paint.stroke-end", "stroke_id": id}), &[]).unwrap();
+}
+
+fn landscape(x0: u32, y0: u32, w: u32, h: u32) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/photos/landscape.jpg");
+    let img = image::open(path).expect("decode landscape").to_rgba8();
+    image::imageops::crop_imm(&img, x0, y0, w, h).to_image().into_raw()
+}
+
+fn editor_from(px: &[u8], w: u32, h: u32) -> Editor {
+    let mut ed = Editor::new(1, 1);
+    crate::register(&mut ed);
+    ed.exec(json!({"op": "doc.open-pixels", "width": w, "height": h}), px).unwrap();
+    ed
+}
+
+/// Gradient energy (sum of |horizontal differences|, RGB) over a rectangle.
+fn texture(px: &[u8], w: u32, r: (u32, u32, u32, u32)) -> f64 {
+    let mut s = 0.0;
+    for y in r.1..r.1 + r.3 {
+        for x in r.0..r.0 + r.2 {
+            let i = ((y * w + x) * 4) as usize;
+            for c in 0..3 {
+                s += (px[i + c] as f64 - px[i + 4 + c] as f64).abs();
+            }
+        }
+    }
+    s
+}
+
+#[test]
+fn blur_brush_ignores_segmentation_and_scales_with_size() {
+    let (w, h) = (600u32, 200u32);
+    let truth = landscape(700, 1400, w, h);
+    let path: Vec<(f64, f64)> = (0..=48).map(|i| (60.0 + 10.0 * i as f64, 100.0)).collect();
+    let brush = json!({"tool": "blur", "strength": 1.0, "brush": {"size": 60.0, "hardness": 0.0, "opacity": 1.0, "flow": 1.0, "spacing": 0.1}});
+    let run = |segments: usize| {
+        let mut ed = editor_from(&truth, w, h);
+        segmented(&mut ed, brush.clone(), &path, segments, "b");
+        layer_pixels(&ed)
+    };
+    let one = run(1);
+    let many = run(48);
+    let diff = one.iter().zip(&many).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / (w * h * 3) as f64;
+    let core = (150, 85, 300, 30);
+    let left = texture(&one, w, core) / texture(&truth, w, core);
+    eprintln!("blur brush: 1 vs 48 segments mean |diff| {diff:.4}; texture left in the core {left:.3}");
+    assert_eq!(one, many, "the same path in 1 or 48 segments paints the same pixels");
+    assert!(left <= 0.25, "a 60-px blur at full strength leaves {left:.3} of the texture");
+    // Beyond the brush (and the blur's reach) nothing changes.
+    for y in [0u32, 20, 180, 199] {
+        for x in (0..w).step_by(7) {
+            let i = ((y * w + x) * 4) as usize;
+            assert_eq!(&one[i..i + 4], &truth[i..i + 4], "({x},{y})");
+        }
+    }
+    // A bigger brush blurs more: σ follows the size.
+    let small = {
+        let mut ed = editor_from(&truth, w, h);
+        let b = json!({"tool": "blur", "strength": 1.0, "brush": {"size": 16.0, "hardness": 0.0, "spacing": 0.1}});
+        segmented(&mut ed, b, &path, 1, "s");
+        layer_pixels(&ed)
+    };
+    let core_small = (150, 97, 300, 6);
+    let left_small = texture(&small, w, core_small) / texture(&truth, w, core_small);
+    let left_big = texture(&one, w, core_small) / texture(&truth, w, core_small);
+    eprintln!("texture left on the centre line: 16 px {left_small:.3}, 60 px {left_big:.3}");
+    assert!(left_big < left_small, "{left_big} vs {left_small}");
+    // Half strength sits between.
+    let half = {
+        let mut ed = editor_from(&truth, w, h);
+        let b = json!({"tool": "blur", "strength": 0.5, "brush": {"size": 60.0, "hardness": 0.0, "spacing": 0.1}});
+        segmented(&mut ed, b, &path, 7, "h");
+        layer_pixels(&ed)
+    };
+    let left_half = texture(&half, w, core) / texture(&truth, w, core);
+    assert!(left_half > left + 0.1 && left_half < 0.9, "{left_half}");
+}
+
+#[test]
+fn coarse_samples_follow_a_smooth_curve() {
+    use crate::brush::{Brush, PathState, StrokePoint};
+    let (cx, cy, r) = (300.0f64, 300.0f64, 100.0f64);
+    let on = |deg: f64| StrokePoint { x: cx + r * deg.to_radians().cos(), y: cy - r * deg.to_radians().sin(), p: 1.0 };
+    let b = Brush { size: 4.0, spacing: 0.1, ..Default::default() };
+    let dev = |dabs: &[crate::brush::Dab]| dabs.iter().map(|d| ((d.x - cx).hypot(d.y - cy) - r).abs()).fold(0.0, f64::max);
+    // Four samples 60° apart: the chords sag 13.4 px inside the circle.
+    let samples: Vec<StrokePoint> = [0.0, 60.0, 120.0, 180.0].iter().map(|&a| on(a)).collect();
+    let mut st = PathState::default();
+    let (mut dabs, tail) = b.walk_smooth(&mut st, &samples);
+    dabs.extend(tail);
+    let mut lin = PathState::default();
+    let chords = b.walk(&mut lin, &samples);
+    // The middle piece has real neighbours on both sides; the end pieces
+    // have mirrored ones.
+    let middle: Vec<_> = dabs.iter().copied().filter(|d| d.y < cy - r * 0.5f64.sqrt() * 1.0 && (d.x - cx).abs() <= r * 0.5 + 1e-9).collect();
+    eprintln!("curve deviation: middle {:.2} px, whole {:.2} px; straight chords {:.2} px", dev(&middle), dev(&dabs), dev(&chords));
+    // Catmull–Rom itself sags 2.57 px on a circle sampled every 60°.
+    assert!(dev(&chords) > 13.0);
+    assert!(dev(&middle) < 2.8, "middle piece deviates {:.2} px", dev(&middle));
+    assert!(dev(&dabs) < 2.8, "whole curve deviates {:.2} px", dev(&dabs));
+    // Every 30°: chords sag 3.4 px, the curve 0.17 px.
+    let samples: Vec<StrokePoint> = (0..7).map(|i| on(i as f64 * 30.0)).collect();
+    let mut st = PathState::default();
+    let (mut dabs, tail) = b.walk_smooth(&mut st, &samples);
+    dabs.extend(tail);
+    eprintln!("curve deviation at 30° samples: {:.2} px; straight chords {:.2} px", dev(&dabs), dev(&b.walk(&mut PathState::default(), &samples)));
+    assert!(dev(&dabs) < 0.4, "{:.2}", dev(&dabs));
+    // Their test (BrushTests.swift): seven samples 30° apart through a 4-px
+    // brush paint the arc between them.
+    let mut ed = grey(600, 600, 255);
+    let pts: Vec<(f64, f64)> = (0..7).map(|i| on(i as f64 * 30.0)).map(|p| (p.x, p.y)).collect();
+    stroke(&mut ed, json!({"tool": "brush", "brush": red_brush(4.0)}), &pts, "arc");
+    for deg in [45.0, 75.0, 105.0, 135.0] {
+        let p = on(deg);
+        assert_eq!(px(&ed, p.x as i32, p.y as i32)[1], 0, "arc at {deg}°");
+    }
+}
+
+#[test]
+fn smoothed_strokes_do_not_depend_on_segmentation() {
+    // A wavy path sampled sparsely, sent whole, point by point, and in threes.
+    let pts: Vec<(f64, f64)> = (0..16).map(|i| (20.0 + i as f64 * 22.0, 100.0 + 50.0 * (i as f64 * 0.9).sin())).collect();
+    for brush in [red_brush(18.0), json!({"size": 30.0, "hardness": 0.2, "opacity": 0.7, "flow": 0.4, "color": {"r": 0, "g": 0, "b": 255}})] {
+        let run = |segments: usize| {
+            let mut ed = grey(400, 200, 255);
+            segmented(&mut ed, json!({"tool": "brush", "brush": brush}), &pts, segments, "w");
+            layer_pixels(&ed)
+        };
+        let whole = run(1);
+        for segments in [5, 15] {
+            let split = run(segments);
+            let worst = whole.iter().zip(&split).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+            assert!(worst <= 1, "{segments} segments differ by up to {worst}");
+        }
+    }
+}
+
+#[test]
+fn hard_stroke_edge_has_no_scallop() {
+    // A 120-px hard stroke: the outermost antialiased row is flat.
+    let (w, h) = (1200u32, 300u32);
+    let mut ed = editor_with(w, h, |_, _| [0, 0, 0, 0]);
+    let b = json!({"size": 120.0, "hardness": 1.0, "opacity": 1.0, "flow": 1.0, "spacing": 0.1, "color": {"r": 0, "g": 0, "b": 0}});
+    stroke(&mut ed, json!({"tool": "brush", "brush": b}), &[(120.0, 150.3), (1080.0, 150.3)], "hard");
+    let px = layer_pixels(&ed);
+    let mut worst = 0;
+    for y in 0..h {
+        let row: Vec<u8> = (360..840).map(|x| px[((y * w + x) * 4 + 3) as usize]).collect();
+        let (mn, mx) = (*row.iter().min().unwrap(), *row.iter().max().unwrap());
+        if mx > 0 && mn < 255 {
+            eprintln!("row {y}: alpha {mn}..{mx}");
+        }
+        worst = worst.max(mx - mn);
+    }
+    assert!(worst <= 1, "edge ripple {worst}/255");
+}

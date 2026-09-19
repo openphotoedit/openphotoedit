@@ -164,7 +164,10 @@ pub enum Cmd {
     #[serde(rename = "filter.content-aware-fill")]
     ContentAwareFill { #[serde(default)] sample: Option<String>, #[serde(default)] seed: u64 },
     #[serde(rename = "filter.spot-heal")]
-    SpotHeal { x: f32, y: f32, radius: f32 },
+    /// With `width`/`height` and single-channel `bytes`, heals a painted
+    /// stroke mask placed at `x, y` (one pass, one undo step); otherwise a
+    /// disc of `radius` at `x, y`.
+    SpotHeal { x: f32, y: f32, #[serde(default)] radius: Option<f32>, #[serde(default)] width: Option<i32>, #[serde(default)] height: Option<i32> },
     #[serde(rename = "filter.red-eye")]
     RedEye { x: i32, y: i32, width: i32, height: i32, #[serde(default = "d50")] pupil_size: f32, #[serde(default = "d50")] darken: f32 },
     #[serde(rename = "filter.frequency-separation")]
@@ -423,7 +426,16 @@ fn run_cmd(cmd: Cmd, id: Option<LayerId>, doc: &mut Document, bytes: &[u8]) -> R
             }
             retouch::content_aware_fill(doc, id, seed)
         }
-        Cmd::SpotHeal { x, y, radius } => retouch::spot_heal(doc, id, finite("x", x)?, finite("y", y)?, finite("radius", radius)?),
+        Cmd::SpotHeal { x, y, width: Some(width), height: Some(height), .. } => {
+            let rect = editor_core::geom::Rect::new(finite("x", x)?.round() as i32, finite("y", y)?.round() as i32, width, height);
+            retouch::spot_heal_mask(doc, id, rect, bytes)
+        }
+        Cmd::SpotHeal { x, y, radius, .. } => {
+            let Some(radius) = radius else {
+                return Err(EditorError::Invalid("`radius` is required (or send `width`, `height` and a stroke mask)".into()));
+            };
+            retouch::spot_heal(doc, id, finite("x", x)?, finite("y", y)?, finite("radius", radius)?)
+        }
         Cmd::RedEye { x, y, width, height, pupil_size, darken } => retouch::red_eye(doc, id, editor_core::geom::Rect::new(x, y, width, height), pupil_size.clamp(1.0, 100.0), darken.clamp(1.0, 100.0)),
         Cmd::FrequencySeparation { radius } => retouch::frequency_separation(doc, id, finite("radius", radius)?.clamp(0.0, 500.0)),
     }

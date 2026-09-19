@@ -11,7 +11,7 @@
   import { isTyping, modHeld } from "../ui/platform";
   import { paintTarget } from "../ui/paint-target.svelte";
   import { tooltip } from "../ui/tooltip";
-  import { ACTIONS, MENUS, handleShortcut, loadFileBridge } from "./actions.svelte";
+  import { ACTIONS, MENUS, handleShortcut, loadFileBridge, stepBlend, typeOpacityDigit } from "./actions.svelte";
   import { resetColors, swapColors } from "./colors";
   import DialogHost from "./dialogs/DialogHost.svelte";
   import DocTabs from "./DocTabs.svelte";
@@ -59,12 +59,32 @@
       void ACTIONS["window.dock"].run();
       return;
     }
+    // Photoshop: Shift+Backspace opens Fill (Alt/Mod+Backspace fill directly,
+    // through handleShortcut above).
+    if ((e.key === "Delete" || e.key === "Backspace") && e.shiftKey) {
+      e.preventDefault();
+      const fill = ACTIONS["edit.fill"];
+      if (!fill.enabled || fill.enabled()) void fill.run();
+      return;
+    }
     if ((e.key === "Delete" || e.key === "Backspace") && editor.summary?.selection) {
       e.preventDefault();
       void ACTIONS["edit.clear"].run();
       return;
     }
     if (e.repeat || e.metaKey || e.ctrlKey) return;
+    // Shift+Plus / Shift+Minus step the blend mode.
+    if (e.shiftKey && (e.code === "Equal" || e.code === "Minus" || e.code === "NumpadAdd" || e.code === "NumpadSubtract")) {
+      e.preventDefault();
+      void stepBlend(e.code === "Equal" || e.code === "NumpadAdd" ? 1 : -1);
+      return;
+    }
+    // Number keys set opacity (layer opacity outside the painting tools).
+    const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code);
+    if (digit && !e.shiftKey && editor.hasDocument && typeOpacityDigit(Number(digit[1]))) {
+      e.preventDefault();
+      return;
+    }
     const k = e.key.toLowerCase();
     if (k === "x" && !e.shiftKey) {
       swapColors();

@@ -15,6 +15,7 @@
   import Slider from "../../ui/Slider.svelte";
   import type { HistogramData } from "../../ui/histogram";
   import AdjustmentEditor from "../adjust/AdjustmentEditor.svelte";
+  import { sampleComposite } from "../adjust/canvas-pick";
   import { kindInfo } from "../adjustments";
   import { histogram, rafThrottle, run } from "../engine.svelte";
   import { ACTIONS } from "../actions.svelte";
@@ -141,7 +142,7 @@
       {/if}
       <span class="title">{info?.label ?? draft.kind}</span>
     </header>
-    <AdjustmentEditor value={draft} histogram={hist} onchange={onAdjust} />
+    <AdjustmentEditor value={draft} histogram={hist} onchange={onAdjust} sample={(x, y) => sampleComposite(x, y, 3, active?.id ?? null)} />
     {#if active.clip}<p class="ops-note">{t("Clipped: affects only the layer below.")}</p>{/if}
   {:else if active}
     <header class="head">

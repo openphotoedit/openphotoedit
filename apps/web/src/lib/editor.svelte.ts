@@ -80,6 +80,8 @@ export class EditorStore {
   /** Every open document; the current one's live state is on this store. */
   tabs = $state<DocTab[]>([{ id: 1, name: "Untitled", dirty: false, hasDocument: false, view: { cx: 0, cy: 0, zoom: 1 } }]);
   currentTab = $state(1);
+  /** The tab a Layers-panel drag is over (a drop copies the layers there). */
+  layerDropTab = $state<number | null>(null);
   private toastId = 1;
 
   constructor() {
@@ -135,6 +137,23 @@ export class EditorStore {
       if (!opts.quiet) this.error(e);
       return null;
     }
+  }
+
+  /**
+   * Run `fn` (which may send any number of commands) as ONE undo step called
+   * `label`, through the engine's `edit.begin`/`edit.end` transaction. If
+   * `fn` returns false or throws, the document is put back as it was
+   * (`edit.cancel`) and nothing is recorded. Transactions nest.
+   */
+  async oneStep(label: string, fn: () => Promise<boolean | void>): Promise<boolean> {
+    await this.exec({ op: "edit.begin", label }, undefined, { quiet: true });
+    let ok: boolean | void = false;
+    try {
+      ok = await fn();
+    } finally {
+      await this.exec({ op: ok === false ? "edit.cancel" : "edit.end" }, undefined, { quiet: true });
+    }
+    return ok !== false;
   }
 
   /** Run a long job with a progress indicator. */
@@ -232,6 +251,26 @@ export class EditorStore {
   private async refreshOthers() {
     await this.refreshSummary();
     this.renderTick++;
+  }
+
+  /**
+   * Copy layers of the current document into another open document (one
+   * undo step there), then show that document. Returns how many top-level
+   * layers arrived, or null on failure.
+   */
+  async copyLayersToTab(dst: number, ids: number[]): Promise<number | null> {
+    if (dst === this.currentTab || !ids.length || !this.tabs.some((t) => t.id === dst)) return null;
+    try {
+      // A plain array: reactive proxies cannot cross to the worker.
+      const r = JSON.parse(await this.engine.call<string>("copy_layers", this.currentTab, dst, Array.from(ids))) as { count: number };
+      this.tabs = this.tabs.map((t) => (t.id === dst ? { ...t, dirty: true } : t));
+      await this.switchTab(dst);
+      this.dirty = true;
+      return r.count;
+    } catch (e) {
+      this.error(e);
+      return null;
+    }
   }
 
   async closeTab(id: number) {

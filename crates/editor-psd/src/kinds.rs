@@ -172,8 +172,12 @@ fn read_one(key: &[u8; 4], data: &[u8]) -> Result<Adjustment> {
             let (ch, cs, cl) = (r.i16()?, r.i16()?, r.i16()?);
             let master = HslShift { hue: r.i16()? as f32, saturation: r.i16()? as f32, lightness: r.i16()? as f32 };
             let mut ranges: [HslShift; 6] = Default::default();
-            for range in ranges.iter_mut() {
-                r.skip(8, "hue range")?;
+            let mut bands = HUE_BANDS_DEFAULT;
+            for (range, band) in ranges.iter_mut().zip(bands.iter_mut()) {
+                // Photoshop's order: falloff start, range start, range end,
+                // falloff end (psd-tools reads the same four i16 values).
+                // Kept as written, so a re-export reproduces the bytes.
+                *band = [r.i16()? as f32, r.i16()? as f32, r.i16()? as f32, r.i16()? as f32];
                 *range = HslShift { hue: r.i16()? as f32, saturation: r.i16()? as f32, lightness: r.i16()? as f32 };
             }
             Adjustment::HueSaturation(HueSaturation {
@@ -183,6 +187,7 @@ fn read_one(key: &[u8; 4], data: &[u8]) -> Result<Adjustment> {
                 colorize_hue: (ch as f32).rem_euclid(360.0),
                 colorize_saturation: cs as f32,
                 colorize_lightness: cl as f32,
+                bands,
             })
         }
         b"brit" => {
@@ -502,17 +507,17 @@ pub fn write_adjustment(adj: &Adjustment) -> Option<Blocks> {
             w.u16(2);
             w.u8(h.colorize as u8);
             w.u8(0);
-            w.i16(h.colorize_hue.round() as i16);
+            // Photoshop stores the colorize hue as -180..180.
+            let ch = h.colorize_hue.round().rem_euclid(360.0);
+            w.i16(if ch > 180.0 { ch - 360.0 } else { ch } as i16);
             w.i16(h.colorize_saturation.round() as i16);
             w.i16(h.colorize_lightness.round() as i16);
             w.i16(h.master.hue.round() as i16);
             w.i16(h.master.saturation.round() as i16);
             w.i16(h.master.lightness.round() as i16);
-            let ranges: [[i16; 4]; 6] =
-                [[315, 345, 15, 45], [15, 45, 75, 105], [75, 105, 135, 165], [135, 165, 195, 225], [195, 225, 255, 285], [255, 285, 315, 345]];
-            for (r, s) in ranges.iter().zip(h.ranges.iter()) {
-                for v in r {
-                    w.i16(*v);
+            for (band, s) in h.bands.iter().zip(h.ranges.iter()) {
+                for v in band {
+                    w.i16(v.round() as i16);
                 }
                 w.i16(s.hue.round() as i16);
                 w.i16(s.saturation.round() as i16);
@@ -664,9 +669,50 @@ pub fn write_adjustment(adj: &Adjustment) -> Option<Blocks> {
         }
         Adjustment::Invert => b"nvrt",
         Adjustment::ColorLookup(l) => return Some(vec![(*b"clrL", color_lookup_block(&l.name, &cube_text(l)))]),
-        Adjustment::Develop(_) => return None,
+        Adjustment::Develop(_) | Adjustment::Grain(_) => return None,
     };
     Some(vec![(*key, w.buf)])
+}
+
+// ---------------------------------------------------------------------------
+// Grain (no Photoshop equivalent)
+
+/// Private block holding a Grain adjustment's parameters (JSON). The layer
+/// itself is written as Linear Light noise pixels for Photoshop.
+pub const GRAIN_KEY: [u8; 4] = *b"opGr";
+
+/// The parameters plus the layer's own blend mode (the record says Linear
+/// Light for Photoshop's sake).
+pub fn write_grain(g: &Grain, blend: [u8; 4]) -> Vec<u8> {
+    let json = serde_json::json!({ "grain": g, "blend": String::from_utf8_lossy(&blend) });
+    let mut v = serde_json::to_vec(&json).unwrap_or_default();
+    while v.len() % 4 != 0 {
+        v.push(b' ');
+    }
+    v
+}
+
+pub fn read_grain(data: &[u8]) -> Option<(Grain, [u8; 4])> {
+    let v: serde_json::Value = serde_json::from_slice(data.trim_ascii_end()).ok()?;
+    let g = serde_json::from_value(v.get("grain")?.clone()).ok()?;
+    let b = v.get("blend").and_then(|b| b.as_str()).map(|b| b.as_bytes()).filter(|b| b.len() == 4).map(|b| [b[0], b[1], b[2], b[3]]).unwrap_or(*b"norm");
+    Some((g, b))
+}
+
+/// Straight RGBA of the grain as a Linear Light layer: Linear Light gives
+/// `base + 2·(blend − ½)`, so a blend value of `½ + δ/2` adds exactly δ, the
+/// delta Grain applies at mid-grey (where its midtone weight is 1).
+pub fn grain_layer_pixels(g: &Grain, w: usize, h: usize) -> Vec<u8> {
+    let strength = (g.amount / 100.0).clamp(0.0, 1.0) * 0.35;
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let d = g.noise(x as f64 + 0.5, y as f64 + 0.5, 1.0) * strength;
+            let v = ((0.5 + d / 2.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+            out[(y * w + x) * 4..][..4].copy_from_slice(&[v, v, v, 255]);
+        }
+    }
+    out
 }
 
 pub fn cube_text(l: &ColorLookup) -> String {

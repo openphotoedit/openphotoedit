@@ -20,8 +20,10 @@ import SquareSplitHorizontal from "@lucide/svelte/icons/square-split-horizontal"
 import Rainbow from "@lucide/svelte/icons/rainbow";
 import Pipette from "@lucide/svelte/icons/pipette";
 import Table2 from "@lucide/svelte/icons/table-2";
+import Film from "@lucide/svelte/icons/film";
 import type { Adjustment } from "../engine/types";
 import { t } from "../lib/i18n";
+import { DEFAULT_BANDS } from "./adjust/hue-bands";
 
 export interface AdjustmentKind {
   kind: string;
@@ -51,6 +53,7 @@ export const ADJUSTMENT_KINDS: (AdjustmentKind | null)[] = [
   { kind: "threshold", label: t("Threshold"), icon: SquareSplitHorizontal },
   { kind: "gradient-map", label: t("Gradient Map"), icon: Rainbow },
   { kind: "selective-color", label: t("Selective Color"), icon: Pipette },
+  { kind: "grain", label: t("Grain"), icon: Film },
   null,
   { kind: "develop", label: t("Camera Raw"), icon: Grid2x2, shortcut: "Shift+Mod+A" },
 ];
@@ -79,7 +82,16 @@ export function defaultAdjustment(kind: string): Adjustment {
     case "vibrance":
       return { kind, vibrance: 0, saturation: 0 };
     case "hue-saturation":
-      return { kind, master: hsl(), ranges: Array.from({ length: 6 }, hsl), colorize: false, colorize_hue: 0, colorize_saturation: 25, colorize_lightness: 0 };
+      return {
+        kind,
+        master: hsl(),
+        ranges: Array.from({ length: 6 }, hsl),
+        colorize: false,
+        colorize_hue: 0,
+        colorize_saturation: 25,
+        colorize_lightness: 0,
+        bands: DEFAULT_BANDS.map((b) => [...b]),
+      };
     case "color-balance":
       return { kind, shadows: [0, 0, 0], midtones: [0, 0, 0], highlights: [0, 0, 0], preserve_luminosity: true };
     case "black-white":
@@ -124,11 +136,19 @@ export function defaultAdjustment(kind: string): Adjustment {
         grain: 0,
         black_white: 0,
       };
+    case "grain":
+      // Each new Grain layer gets its own pattern.
+      return { kind, amount: 25, size: 1.5, roughness: 50, seed: newSeed() };
     case "color-lookup":
       return { kind, name: t("Identity"), size: 2, table: identityLut(2), strength: 1 };
     default:
       return { kind };
   }
+}
+
+/** A random 32-bit seed (Grain, Add Noise). */
+export function newSeed(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0];
 }
 
 /** Fill in any fields missing from an engine value, so editors never read `undefined`. */

@@ -218,6 +218,30 @@ pub fn subject_boxes(matte: &[u8], width: u32, height: u32, max_boxes: usize) ->
         .collect()
 }
 
+/// Remove Background's final mask, combining the model's matte with what
+/// the layer already has instead of refusing (Compositor multiplies into an
+/// existing mask and limits the change to the selection: Filters.swift,
+/// SubjectRemoval.swift, MIT):
+///
+/// - `existing`: the layer's current mask over the same pixels (None = the
+///   layer has no mask, i.e. all 255). The matte multiplies into it, so
+///   anything already hidden stays hidden.
+/// - `selection`: selection coverage (None = no selection, i.e. all 255).
+///   Outside the selection the existing mask is kept exactly; across a soft
+///   edge the two blend: `sel·(existing·matte) + (1−sel)·existing`.
+///
+/// All three are single-channel planes of the same length.
+pub fn combine_with_existing(matte: &[u8], existing: Option<&[u8]>, selection: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(matte.len());
+    for (i, &m) in matte.iter().enumerate() {
+        let e = existing.map_or(255.0, |e| e[i] as f32);
+        let s = selection.map_or(1.0, |s| s[i] as f32 / 255.0);
+        let removed = e * m as f32 / 255.0;
+        out.push((s * removed + (1.0 - s) * e).round().clamp(0.0, 255.0) as u8);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +326,22 @@ mod tests {
         let n = normalise_u2net(&d0);
         assert_eq!(n[0], 0.0);
         assert_eq!(*n.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn remove_background_multiplies_into_an_existing_mask() {
+        assert_eq!(combine_with_existing(&[255, 0, 128], Some(&[128, 128, 255]), None), vec![128, 0, 128]);
+        assert_eq!(combine_with_existing(&[255, 0], None, None), vec![255, 0]);
+    }
+
+    #[test]
+    fn remove_background_respects_the_selection() {
+        // Left half selected: changed there; right half keeps the existing mask exactly.
+        let matte = [0u8, 0, 0, 0];
+        let existing = [200u8, 200, 90, 90];
+        let sel = [255u8, 255, 0, 0];
+        assert_eq!(combine_with_existing(&matte, Some(&existing), Some(&sel)), vec![0, 0, 90, 90]);
+        // Without a mask the unselected part stays fully shown; a half-selected pixel blends.
+        assert_eq!(combine_with_existing(&[0, 0, 0], None, Some(&[255, 128, 0])), vec![0, 127, 255]);
     }
 }

@@ -49,6 +49,8 @@ pub enum Adjustment {
     Develop(Develop),
     /// A 3D lookup table, `size`³ RGB entries in 0..1.
     ColorLookup(ColorLookup),
+    /// Film grain, fixed to the document (see [`Grain`]).
+    Grain(Grain),
 }
 
 impl Adjustment {
@@ -71,6 +73,7 @@ impl Adjustment {
             Adjustment::SelectiveColor(_) => "Selective Color",
             Adjustment::Develop(_) => "Develop",
             Adjustment::ColorLookup(_) => "Color Lookup",
+            Adjustment::Grain(_) => "Grain",
         }
     }
 
@@ -94,6 +97,7 @@ impl Adjustment {
             "gradient-map" => Adjustment::GradientMap(Default::default()),
             "selective-color" => Adjustment::SelectiveColor(Default::default()),
             "develop" => Adjustment::Develop(Default::default()),
+            "grain" => Adjustment::Grain(Default::default()),
             _ => return None,
         })
     }
@@ -137,6 +141,7 @@ impl Adjustment {
             Adjustment::SelectiveColor(p) => p.apply(buf),
             Adjustment::Develop(p) => p.apply(buf, ctx),
             Adjustment::ColorLookup(p) => p.apply(buf),
+            Adjustment::Grain(p) => p.apply(buf, ctx),
         }
     }
 }
@@ -473,7 +478,24 @@ pub struct HueSaturation {
     pub colorize_hue: f32,
     pub colorize_saturation: f32,
     pub colorize_lightness: f32,
+    /// Each range's hue band in degrees, as Photoshop stores it: falloff
+    /// start, range start, range end, falloff end (wrapping at 360). Full
+    /// strength between the two range handles, a straight-line ramp across
+    /// each falloff shoulder. Projects saved before bands existed load with
+    /// Photoshop's defaults.
+    pub bands: [[f32; 4]; 6],
 }
+
+/// Photoshop's starting bands for reds, yellows, greens, cyans, blues and
+/// magentas: 30° of full strength with a 30° shoulder either side.
+pub const HUE_BANDS_DEFAULT: [[f32; 4]; 6] = [
+    [315.0, 345.0, 15.0, 45.0],
+    [15.0, 45.0, 75.0, 105.0],
+    [75.0, 105.0, 135.0, 165.0],
+    [135.0, 165.0, 195.0, 225.0],
+    [195.0, 225.0, 255.0, 285.0],
+    [255.0, 285.0, 315.0, 345.0],
+];
 
 impl Default for HueSaturation {
     fn default() -> Self {
@@ -484,10 +506,51 @@ impl Default for HueSaturation {
             colorize_hue: 0.0,
             colorize_saturation: 25.0,
             colorize_lightness: 0.0,
+            bands: HUE_BANDS_DEFAULT,
         }
     }
 }
 
+/// Degrees from `from` forward to `to`, always in 0..360.
+fn hue_forward(from: f32, to: f32) -> f32 {
+    (to - from).rem_euclid(360.0)
+}
+
+/// How strongly a hue band `[falloff start, range start, range end, falloff
+/// end]` claims `hue`: 1 on the plateau, a straight line to 0 across each
+/// shoulder, 0 outside. Distances are measured forward from the falloff
+/// start, so bands that wrap through 0° need no special case.
+///
+/// Ported from Compositor's `HueBand.weight(of:)` (HueSaturation.swift,
+/// MIT licence, © the Compositor authors), which follows Photoshop's
+/// four-handle range model.
+pub fn hue_band_weight(band: [f32; 4], hue: f32) -> f32 {
+    let [fs, rs, re, fe] = band;
+    let span = hue_forward(fs, fe);
+    if span <= 0.0 {
+        return 1.0;
+    }
+    let pos = hue_forward(fs, hue);
+    if pos > span {
+        return 0.0;
+    }
+    let ramp_in = hue_forward(fs, rs).min(span);
+    let plateau_end = hue_forward(fs, re).min(span).max(ramp_in);
+    if pos < ramp_in {
+        return pos / ramp_in;
+    }
+    if pos <= plateau_end {
+        return 1.0;
+    }
+    let ramp_out = span - plateau_end;
+    if ramp_out > 0.0 {
+        (span - pos) / ramp_out
+    } else {
+        1.0
+    }
+}
+
+/// Master lightness: every channel moves toward white (or black) together.
 fn apply_lightness(c: [f32; 3], l: f32) -> [f32; 3] {
     if l > 0.0 {
         c.map(|v| v + (1.0 - v) * l)
@@ -496,46 +559,228 @@ fn apply_lightness(c: [f32; 3], l: f32) -> [f32; 3] {
     }
 }
 
+/// A colour range's lightness: channels move toward the pixel's own
+/// brightest channel (or darkest, when negative), so +100 on Reds turns pure
+/// red white but a dull red only grey. Greys, which no range claims, are
+/// untouched.
+fn apply_range_lightness(c: [f32; 3], l: f32) -> [f32; 3] {
+    let mx = c[0].max(c[1]).max(c[2]);
+    let mn = c[0].min(c[1]).min(c[2]);
+    if l > 0.0 {
+        c.map(|v| v + (mx - v) * l)
+    } else {
+        c.map(|v| v + (v - mn) * l)
+    }
+}
+
+/// How far a saturation slider value (-1..1) pushes chroma away from grey:
+/// `c + (c − L)·α`. Negative values scale chroma by `1 + inc`; positive ones
+/// by `1 / (1 − inc)`, so +100 means "as saturated as possible".
+fn saturation_alpha(inc: f32) -> f32 {
+    if inc > 0.0 {
+        if inc >= 1.0 {
+            1.0e6
+        } else {
+            inc / (1.0 - inc)
+        }
+    } else {
+        inc
+    }
+}
+
+/// Push chroma by `alpha` about the HSL midpoint, never past full saturation
+/// (which would shift the hue as channels clip) or through grey.
+fn apply_saturation(c: [f32; 3], alpha: f32) -> [f32; 3] {
+    if alpha == 0.0 {
+        return c;
+    }
+    let mx = c[0].max(c[1]).max(c[2]);
+    let mn = c[0].min(c[1]).min(c[2]);
+    let l = (mx + mn) / 2.0;
+    let d = mx - mn;
+    if d <= 0.0 {
+        return c;
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(1e-6);
+    let alpha = alpha.clamp(-1.0, (1.0 / s.max(1e-6) - 1.0).max(0.0));
+    c.map(|v| (v + (v - l) * alpha).clamp(0.0, 1.0))
+}
+
+fn rotate_hue(c: [f32; 3], dh: f32) -> [f32; 3] {
+    if dh == 0.0 {
+        return c;
+    }
+    let hsl = rgb_to_hsl(c);
+    hsl_to_rgb([(hsl[0] + dh).rem_euclid(360.0), hsl[1], hsl[2]])
+}
+
 impl HueSaturation {
+    /// Photoshop's Hue/Saturation, fitted to Photoshop's own composites in
+    /// the psd-tools corpus (`adjustments/huesaturation_*.psd`, 16 strips,
+    /// mean error 0.5/255; see `hue_saturation_matches_photoshop` in
+    /// editor-psd's tests):
+    ///
+    /// 1. The colour ranges act first, weighted by each band at the pixel's
+    ///    original hue: hue shifts add up; lightness adds up (clamped to
+    ///    ±100) and moves channels toward the pixel's max/min; saturation
+    ///    adds up each range's full-strength push (`saturation_alpha`), so
+    ///    +89 Cyans and −92 Blues on the same band leave a strong boost, as
+    ///    in Photoshop.
+    /// 2. Then Master: hue, lightness (toward white/black), saturation.
+    ///
+    /// Colorize takes the HSL lightness `(max+min)/2`, applies its
+    /// lightness to that, and rebuilds the colour from hue and saturation.
     fn apply(&self, buf: &mut [f32]) {
         if self.colorize {
-            let h = self.colorize_hue;
-            let s = self.colorize_saturation / 100.0;
-            let l = self.colorize_lightness / 100.0;
+            let h = self.colorize_hue.rem_euclid(360.0);
+            let s = (self.colorize_saturation / 100.0).clamp(0.0, 1.0);
+            let dl = (self.colorize_lightness / 100.0).clamp(-1.0, 1.0);
             for px in buf.chunks_exact_mut(4) {
-                let y = luma([px[0], px[1], px[2]]);
-                let rgb = hsl_to_rgb([h, s, y]);
-                let out = apply_lightness(rgb, l);
-                px[..3].copy_from_slice(&out);
+                let mx = px[0].max(px[1]).max(px[2]);
+                let mn = px[0].min(px[1]).min(px[2]);
+                let l = (mx + mn) / 2.0;
+                let l = if dl > 0.0 { l + (1.0 - l) * dl } else { l * (1.0 + dl) };
+                let out = hsl_to_rgb([h, s, l.clamp(0.0, 1.0)]);
+                px[..3].copy_from_slice(&out.map(|v| v.clamp(0.0, 1.0)));
             }
             return;
         }
-        let centres = [0.0f32, 60.0, 120.0, 180.0, 240.0, 300.0];
-        let any_range = self.ranges.iter().any(|r| *r != HslShift::default());
+        let active: Vec<(usize, &HslShift, f32)> = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| **r != HslShift::default())
+            .map(|(i, r)| (i, r, saturation_alpha(r.saturation / 100.0)))
+            .collect();
+        let m = &self.master;
+        let master_alpha = saturation_alpha(m.saturation / 100.0);
         for px in buf.chunks_exact_mut(4) {
-            let mut hsl = rgb_to_hsl([px[0], px[1], px[2]]);
-            let (mut dh, mut ds, mut dl) = (self.master.hue, self.master.saturation, self.master.lightness);
-            if any_range && hsl[1] > 0.0 {
-                for (i, r) in self.ranges.iter().enumerate() {
-                    if *r == HslShift::default() {
-                        continue;
+            let mut c = [px[0], px[1], px[2]];
+            if !active.is_empty() {
+                let hsl = rgb_to_hsl(c);
+                if hsl[1] > 0.0 {
+                    let (mut dh, mut dl, mut alpha) = (0.0f32, 0.0f32, 0.0f32);
+                    for &(i, r, a) in &active {
+                        let w = hue_band_weight(self.bands[i], hsl[0]);
+                        if w > 0.0 {
+                            dh += r.hue * w;
+                            dl += r.lightness / 100.0 * w;
+                            alpha += a * w;
+                        }
                     }
-                    // Full weight within 15° of the centre, fading to zero
-                    // at 45°, like Photoshop's default range sliders.
-                    let d = (hsl[0] - centres[i]).rem_euclid(360.0);
-                    let d = d.min(360.0 - d);
-                    let w = 1.0 - smoothstep(15.0, 45.0, d);
-                    dh += r.hue * w;
-                    ds += r.saturation * w;
-                    dl += r.lightness * w;
+                    c = rotate_hue(c, dh);
+                    if dl != 0.0 {
+                        c = apply_range_lightness(c, dl.clamp(-1.0, 1.0)).map(|v| v.clamp(0.0, 1.0));
+                    }
+                    c = apply_saturation(c, alpha);
                 }
             }
-            hsl[0] = (hsl[0] + dh).rem_euclid(360.0);
-            let s = ds / 100.0;
-            hsl[1] = if s > 0.0 { hsl[1] + (1.0 - hsl[1]) * s * hsl[1].sqrt() } else { hsl[1] * (1.0 + s) };
-            let rgb = hsl_to_rgb([hsl[0], hsl[1].clamp(0.0, 1.0), hsl[2]]);
-            let out = apply_lightness(rgb, dl / 100.0);
-            px[..3].copy_from_slice(&out.map(|v| v.clamp(0.0, 1.0)));
+            c = rotate_hue(c, m.hue);
+            if m.lightness != 0.0 {
+                c = apply_lightness(c, (m.lightness / 100.0).clamp(-1.0, 1.0));
+            }
+            c = apply_saturation(c, master_alpha);
+            px[..3].copy_from_slice(&c.map(|v| v.clamp(0.0, 1.0)));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grain
+
+/// Film grain: brightness noise, strongest in the midtones, added equally
+/// to R, G and B. The pattern is fixed to document pixels, so a preview at
+/// any zoom, a crop of the buffer and the export all agree.
+///
+/// Ported from Compositor's `adjust_grain` (Compositor/Rendering/
+/// AdjustPixels.c, MIT licence, © the Compositor authors): value noise on a
+/// lattice `size` document pixels apart with smoothstep interpolation,
+/// blended by `roughness` with per-pixel noise, scaled by
+/// `0.35 · amount · (0.4 + 2.4·L·(1−L))` with L the Rec.709 luma. Ours runs
+/// on straight colour (theirs unpremultiplies first; same result), and when
+/// a zoomed-out preview samples more than one document pixel per buffer
+/// pixel each term is scaled down by how many independent values it would
+/// average, so the preview does not look coarser than the export.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grain {
+    /// 0..100
+    pub amount: f32,
+    /// Grain size in document pixels, 0.5..20.
+    pub size: f32,
+    /// 0..100: how much per-pixel noise roughens the smooth grain.
+    pub roughness: f32,
+    pub seed: u32,
+}
+
+impl Default for Grain {
+    fn default() -> Self {
+        Self { amount: 25.0, size: 1.5, roughness: 50.0, seed: 1 }
+    }
+}
+
+#[inline]
+fn mix32(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x
+}
+
+/// −1..1 for an integer lattice point: two uniform halves summed, a
+/// triangular spread closer to film grain than flat noise.
+#[inline]
+fn grain_lattice(ix: i64, iy: i64, seed: u32) -> f32 {
+    let h = mix32((ix as u32).wrapping_mul(0x9E37_79B1) ^ mix32((iy as u32).wrapping_mul(0x85EB_CA77) ^ seed));
+    (h & 0xFFFF) as f32 / 65535.0 + (h >> 16) as f32 / 65535.0 - 1.0
+}
+
+impl Grain {
+    /// The grain value (−1.6..1.6-ish) at document point (u, v).
+    pub fn noise(&self, u: f64, v: f64, step: f64) -> f32 {
+        let size = if self.size > 0.0 { self.size as f64 } else { 1.0 };
+        let rough = (self.roughness / 100.0).clamp(0.0, 1.0);
+        let (cx, cy) = ((u / size).floor(), (v / size).floor());
+        let ease = |t: f32| t * t * (3.0 - 2.0 * t);
+        let tx = ease((u / size - cx) as f32);
+        let ty = ease((v / size - cy) as f32);
+        let (ix, iy) = (cx as i64, cy as i64);
+        let n00 = grain_lattice(ix, iy, self.seed);
+        let n10 = grain_lattice(ix + 1, iy, self.seed);
+        let n01 = grain_lattice(ix, iy + 1, self.seed);
+        let n11 = grain_lattice(ix + 1, iy + 1, self.seed);
+        let top = n00 + (n10 - n00) * tx;
+        let bottom = n01 + (n11 - n01) * tx;
+        // Blending neighbours narrows the spread; ×1.6 restores it.
+        let mut smooth = (top + (bottom - top) * ty) * 1.6;
+        let mut fine = grain_lattice(u.floor() as i64, v.floor() as i64, mix32(self.seed ^ 0xA511_E9B3));
+        if step > 1.0 {
+            fine /= step as f32;
+            smooth *= (size / step).min(1.0) as f32;
+        }
+        smooth + (fine - smooth) * rough
+    }
+
+    fn apply(&self, buf: &mut [f32], ctx: &ApplyCtx) {
+        if !(self.amount > 0.0) || ctx.step <= 0.0 {
+            return;
+        }
+        let strength = (self.amount / 100.0).min(1.0) * 0.35;
+        for (j, row) in buf.chunks_exact_mut(ctx.width * 4).enumerate() {
+            let v = ctx.y0 + (j as f64 + 0.5) * ctx.step;
+            for (i, px) in row.chunks_exact_mut(4).enumerate() {
+                if px[3] <= 0.0 {
+                    continue;
+                }
+                let u = ctx.x0 + (i as f64 + 0.5) * ctx.step;
+                let l = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).clamp(0.0, 1.0);
+                let delta = self.noise(u, v, ctx.step) * strength * (0.4 + 2.4 * l * (1.0 - l));
+                for c in &mut px[..3] {
+                    *c = (*c + delta).clamp(0.0, 1.0);
+                }
+            }
         }
     }
 }
@@ -1213,6 +1458,133 @@ mod tests {
         hs.master.hue = 180.0;
         let out = run(&Adjustment::HueSaturation(hs), [1.0, 0.0, 0.0]);
         assert!(close(out, [0.0, 1.0, 1.0], 0.01), "{out:?}");
+    }
+
+    #[test]
+    fn hue_band_weights_are_straight_lines() {
+        let reds = HUE_BANDS_DEFAULT[0];
+        for (h, w) in [(0.0, 1.0), (345.0, 1.0), (15.0, 1.0), (330.0, 0.5), (30.0, 0.5), (20.0, 0.8333), (315.0, 0.0), (45.0, 0.0), (180.0, 0.0)] {
+            assert!((hue_band_weight(reds, h) - w).abs() < 1e-3, "h {h}: {}", hue_band_weight(reds, h));
+        }
+        // A band that wraps most of the circle (Photoshop allows up to 350°).
+        let wide = [199.0, 359.0, 29.0, 170.0];
+        assert_eq!(hue_band_weight(wide, 10.0), 1.0);
+        assert!((hue_band_weight(wide, 279.0) - 0.5).abs() < 1e-3);
+        assert_eq!(hue_band_weight(wide, 185.0), 0.0);
+        // Degenerate: a full circle is master-like.
+        assert_eq!(hue_band_weight([0.0, 0.0, 0.0, 0.0], 123.0), 1.0);
+    }
+
+    #[test]
+    fn ranges_follow_their_bands() {
+        // Blues −100 saturation leaves red alone and greys blue.
+        let mut hs = HueSaturation::default();
+        hs.ranges[4].saturation = -100.0;
+        let adj = Adjustment::HueSaturation(hs.clone());
+        assert!(close(run(&adj, [1.0, 0.0, 0.0]), [1.0, 0.0, 0.0], 1e-4));
+        let b = run(&adj, [0.0, 0.0, 1.0]);
+        assert!(close(b, [0.5, 0.5, 0.5], 1e-3), "{b:?}");
+        // Move the blues band onto red: now red greys and blue is untouched.
+        hs.bands[4] = [315.0, 345.0, 15.0, 45.0];
+        let adj = Adjustment::HueSaturation(hs);
+        assert!(close(run(&adj, [0.0, 0.0, 1.0]), [0.0, 0.0, 1.0], 1e-4));
+        assert!(close(run(&adj, [1.0, 0.0, 0.0]), [0.5, 0.5, 0.5], 1e-3));
+    }
+
+    #[test]
+    fn range_lightness_moves_toward_the_pixels_own_extremes() {
+        // Photoshop: Reds +100 turns pure red white but a dull red grey at its
+        // own brightest channel (measured in huesaturation_lightness_rgb.psd,
+        // where (120,73,49) under +100 ranges becomes (121,121,121) before the
+        // master step).
+        let mut hs = HueSaturation::default();
+        hs.ranges[0].lightness = 100.0;
+        let adj = Adjustment::HueSaturation(hs.clone());
+        assert!(close(run(&adj, [1.0, 0.0, 0.0]), [1.0, 1.0, 1.0], 1e-4));
+        let dull = run(&adj, [120.0 / 255.0, 60.0 / 255.0, 50.0 / 255.0]);
+        assert!(close(dull, [120.0 / 255.0; 3], 2e-3), "{dull:?}");
+        hs.ranges[0].lightness = -100.0;
+        let adj = Adjustment::HueSaturation(hs);
+        let dull = run(&adj, [120.0 / 255.0, 60.0 / 255.0, 50.0 / 255.0]);
+        assert!(close(dull, [50.0 / 255.0; 3], 2e-3), "{dull:?}");
+    }
+
+    #[test]
+    fn overlapping_saturation_ranges_add_their_pushes() {
+        // Same band, +89 and −92: the push of +89 (×9.1) outweighs −92, so the
+        // colour gets much more saturated, as Photoshop renders it.
+        let mut hs = HueSaturation::default();
+        hs.ranges[3].saturation = 89.0;
+        hs.ranges[4].saturation = -92.0;
+        hs.bands[3] = [188.0, 195.0, 286.0, 294.0];
+        hs.bands[4] = [188.0, 195.0, 286.0, 294.0];
+        let c = [0.40, 0.42, 0.48];
+        let out = run(&Adjustment::HueSaturation(hs), c);
+        let d = |c: [f32; 3]| c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2]);
+        assert!(d(out) > d(c) * 5.0, "{out:?}");
+    }
+
+    #[test]
+    fn master_saturation_100_is_fully_saturated_and_keeps_hue() {
+        let mut hs = HueSaturation::default();
+        hs.master.saturation = 100.0;
+        let out = run(&Adjustment::HueSaturation(hs), [0.6, 0.5, 0.45]);
+        let hsl = rgb_to_hsl(out);
+        let hsl0 = rgb_to_hsl([0.6, 0.5, 0.45]);
+        assert!((hsl[1] - 1.0).abs() < 1e-3 && (hsl[0] - hsl0[0]).abs() < 0.5 && (hsl[2] - hsl0[2]).abs() < 1e-3, "{hsl:?}");
+    }
+
+    #[test]
+    fn projects_without_bands_load_photoshop_defaults() {
+        let json = r#"{"kind":"hue-saturation","master":{"hue":10,"saturation":0,"lightness":0},"ranges":[{"hue":0,"saturation":0,"lightness":0},{"hue":0,"saturation":0,"lightness":0},{"hue":0,"saturation":0,"lightness":0},{"hue":0,"saturation":0,"lightness":0},{"hue":0,"saturation":0,"lightness":0},{"hue":0,"saturation":0,"lightness":0}],"colorize":false,"colorize_hue":0,"colorize_saturation":25,"colorize_lightness":0}"#;
+        let Adjustment::HueSaturation(h) = serde_json::from_str::<Adjustment>(json).unwrap() else { panic!() };
+        assert_eq!(h.bands, HUE_BANDS_DEFAULT);
+        assert_eq!(h.master.hue, 10.0);
+    }
+
+    fn grain_buf(g: &Grain, w: usize, h: usize, x0: f64, y0: f64, grey: f32) -> Vec<f32> {
+        let mut buf = [grey, grey, grey, 1.0].repeat(w * h);
+        let ctx = ApplyCtx { x0, y0, step: 1.0, doc_w: 1000, doc_h: 1000, width: w, height: h };
+        Adjustment::Grain(g.clone()).apply(&mut buf, &ctx);
+        buf
+    }
+
+    #[test]
+    fn grain_is_fixed_to_the_document() {
+        let g = Grain { amount: 60.0, size: 2.5, roughness: 40.0, seed: 7 };
+        let whole = grain_buf(&g, 40, 40, 0.0, 0.0, 0.5);
+        let part = grain_buf(&g, 20, 20, 10.0, 10.0, 0.5);
+        for y in 0..20 {
+            for x in 0..20 {
+                let a = &whole[((y + 10) * 40 + x + 10) * 4..][..4];
+                let b = &part[(y * 20 + x) * 4..][..4];
+                assert_eq!(a, b, "at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn grain_is_neutral_seeded_and_keeps_alpha() {
+        let g = Grain { amount: 50.0, size: 1.5, roughness: 50.0, seed: 7 };
+        let a = grain_buf(&g, 32, 32, 0.0, 0.0, 0.5);
+        assert!(a.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0));
+        assert!(a.chunks_exact(4).any(|p| (p[0] - 0.5).abs() > 0.02));
+        let b = grain_buf(&Grain { seed: 8, ..g.clone() }, 32, 32, 0.0, 0.0, 0.5);
+        assert_ne!(a, b);
+        let zero = grain_buf(&Grain { amount: 0.0, ..g }, 8, 8, 0.0, 0.0, 0.5);
+        assert!(zero.iter().all(|&v| v == 0.5 || v == 1.0));
+    }
+
+    #[test]
+    fn grain_strength_matches_compositor() {
+        // Amount 100, roughness 100, on mid-grey: pure per-pixel triangular
+        // noise, sd = 0.35·255·√(1/6) ≈ 36.4 levels.
+        let g = Grain { amount: 100.0, size: 1.0, roughness: 100.0, seed: 3 };
+        let buf = grain_buf(&g, 256, 256, 0.0, 0.0, 0.5);
+        let vals: Vec<f64> = buf.chunks_exact(4).map(|p| p[0] as f64 * 255.0).collect();
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        let sd = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64).sqrt();
+        assert!((sd - 36.4).abs() < 3.0, "sd {sd}");
     }
 
     #[test]

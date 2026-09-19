@@ -189,6 +189,24 @@ pub fn ai_subject_boxes(m: &[u8], w: u32, h: u32, max_boxes: u32) -> Vec<f32> {
     matte::subject_boxes(m, w, h, max_boxes as usize).into_iter().flatten().collect()
 }
 
+/// Remove Background onto a layer that may already have a mask, limited to a
+/// selection: `existing` and `selection` are empty when absent. See
+/// `matte::combine_with_existing`.
+#[wasm_bindgen]
+pub fn ai_combine_masks(matte: &[u8], existing: &[u8], selection: &[u8]) -> Result<Vec<u8>, JsError> {
+    let opt = |b: &'static str, v: &[u8]| -> Result<(), JsError> {
+        if !v.is_empty() && v.len() != matte.len() {
+            return Err(JsError::new(&format!("{b} is {} bytes; the matte is {}", v.len(), matte.len())));
+        }
+        Ok(())
+    };
+    opt("existing mask", existing)?;
+    opt("selection", selection)?;
+    let e = (!existing.is_empty()).then_some(existing);
+    let s = (!selection.is_empty()).then_some(selection);
+    Ok(matte::combine_with_existing(matte, e, s))
+}
+
 #[wasm_bindgen]
 pub fn ai_matte_coverage(m: &[u8]) -> f32 {
     matte::coverage(m)

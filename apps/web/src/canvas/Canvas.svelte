@@ -1,11 +1,29 @@
 <script lang="ts">
   // The document viewport: renders the composite through the engine, draws
   // selection outlines and tool overlays, and turns pointer input into tool
-  // calls in document coordinates.
+  // calls in document coordinates. Canvas-wide gestures live here: the
+  // right-drag brush size/hardness scrub, edge autoscroll while dragging,
+  // and Cmd/Ctrl+arrow pixel nudges.
   import { onMount } from "svelte";
   import { editor } from "../lib/editor.svelte";
   import { TOOLS } from "../tools/registry";
-  import type { ToolPointer } from "../tools/types";
+  import type { Tool, ToolPointer } from "../tools/types";
+  import { drawLabel, mods } from "../tools/common";
+  import { setSizeFor as setBrushSizeFor, sizeFor as brushSizeFor, toolSettings } from "../tools/settings.svelte";
+  import { liquifySettings, setLiquifySize } from "../tools/liquify.svelte";
+
+  // Liquify keeps its own brush size; every other brush tool shares the
+  // settings store. Right-drag resizing goes through these two.
+  const sizeFor = (tool: string) => (tool === "liquify" ? liquifySettings.size : brushSizeFor(tool));
+  const setSizeFor = (tool: string, v: number) => (tool === "liquify" ? setLiquifySize(v) : setBrushSizeFor(tool, v));
+  import { nudgeSelectedPixels } from "../tools/move";
+
+  /** Tools that paint with a round tip: right-drag scrubs its size and hardness. */
+  const BRUSH_TOOLS = new Set(["brush", "pencil", "eraser", "clone", "heal", "spot-heal", "remove", "dodge", "burn", "sponge", "blur-brush", "sharpen-brush", "smudge", "liquify", "quick-select"]);
+  /** Tools whose drags pan the view when the pointer goes past the edge. */
+  const AUTOSCROLL_TOOLS = new Set(["marquee-rect", "marquee-ellipse", "lasso", "move", "crop", "transform", "object-select"]);
+  /** Tool hooks the contract does not name (Alt released ends an open lasso). */
+  type ToolExt = Tool & { keyup?(ed: typeof editor, e: KeyboardEvent): boolean };
 
   let { toolOverride = null }: { toolOverride?: string | null } = $props();
 
@@ -20,7 +38,11 @@
   let inFlight = false;
   let pending = false;
   let spaceHeld = $state(false);
+  let altHeld = $state(false);
   let pressed = false;
+  /** Last pointer event of the current drag (autoscroll and key-only re-dispatch). */
+  let lastDragEvent: PointerEvent | null = null;
+  let autoscrollRaf = 0;
   let pointerDownTool: string | null = null;
 
   // Selection outline: edge pixels in device space for the current frame.
@@ -31,7 +53,140 @@
   let antsWritten: number[] = [];
 
   const activeToolId = $derived(spaceHeld ? "hand" : (toolOverride ?? editor.tool));
-  const cursor = $derived(editor.cursor ?? TOOLS[activeToolId]?.cursor ?? "default");
+  const cursor = $derived(activeToolId === "zoom" && altHeld && !editor.cursor ? "zoom-out" : (editor.cursor ?? TOOLS[activeToolId]?.cursor ?? "default"));
+
+  // ---------------------------------------------------------------------
+  // Right-drag brush scrub (Photoshop: Ctrl+Opt-drag on macOS, Alt+right-drag
+  // on Windows, both with vertical hardness; Compositor: right-drag, with
+  // Shift for hardness). Changes the tool options only: no history step.
+
+  interface Scrub {
+    tool: string;
+    /** Where the tip stays pinned (viewport px). */
+    px: number;
+    py: number;
+    /** Baseline of the current axis (rebased when Shift toggles). */
+    vx: number;
+    vy: number;
+    size0: number;
+    hard0: number;
+    /** Photoshop's HUD: horizontal size and vertical hardness together. */
+    hud: boolean;
+    shift: boolean;
+  }
+  let scrub: Scrub | null = null;
+
+  function hardnessKey(tool: string): "brushHardness" | "eraserHardness" | null {
+    if (tool === "pencil") return null;
+    return tool === "eraser" ? "eraserHardness" : "brushHardness";
+  }
+
+  function hardnessOf(tool: string): number {
+    const k = hardnessKey(tool);
+    return k ? toolSettings[k] : 1;
+  }
+
+  function startScrub(e: PointerEvent, tool: string) {
+    const p = pointer(e);
+    scrub = { tool, px: p.vx, py: p.vy, vx: p.vx, vy: p.vy, size0: sizeFor(tool), hard0: hardnessOf(tool), hud: e.button === 0 || e.altKey, shift: e.shiftKey };
+    drawOverlay();
+  }
+
+  function moveScrub(e: PointerEvent) {
+    const sc = scrub!;
+    const p = pointer(e);
+    if (!sc.hud && e.shiftKey !== sc.shift) {
+      // Switching axis keeps what the other one set.
+      Object.assign(sc, { vx: p.vx, vy: p.vy, size0: sizeFor(sc.tool), hard0: hardnessOf(sc.tool), shift: e.shiftKey });
+    }
+    const dx = p.vx - sc.vx;
+    const dy = p.vy - sc.vy;
+    const k = hardnessKey(sc.tool);
+    // The circle's edge follows the pointer: radius grows by dx view px.
+    if (sc.hud || !sc.shift) setSizeFor(sc.tool, sc.size0 + (2 * dx) / editor.view.zoom);
+    if (k && (sc.hud || sc.shift)) {
+      const h = sc.hud ? sc.hard0 - dy / 200 : sc.hard0 + dx / 200;
+      toolSettings[k] = Math.round(Math.min(1, Math.max(0, h)) * 100) / 100;
+    }
+    drawOverlay();
+  }
+
+  function drawScrub(ctx: CanvasRenderingContext2D) {
+    const sc = scrub;
+    if (!sc) return;
+    const size = sizeFor(sc.tool);
+    const hard = hardnessOf(sc.tool);
+    const r = Math.max(1, (size / 2) * editor.view.zoom);
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (const [col, off] of [["rgba(0,0,0,0.85)", 0], ["rgba(255,255,255,0.9)", 1]] as const) {
+      ctx.strokeStyle = col;
+      ctx.beginPath();
+      ctx.arc(sc.px, sc.py, r + off, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // The hard core: where the tip is fully opaque.
+    if (hard < 1 && r * hard > 1) {
+      ctx.setLineDash([3, 3]);
+      for (const [col, off] of [["rgba(0,0,0,0.8)", 0], ["rgba(255,255,255,0.9)", 3]] as const) {
+        ctx.strokeStyle = col;
+        ctx.lineDashOffset = off;
+        ctx.beginPath();
+        ctx.arc(sc.px, sc.py, r * hard, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    const hk = hardnessKey(sc.tool);
+    drawLabel(ctx, hk ? `Ø ${size} px · ${Math.round(hard * 100)}% hard` : `Ø ${size} px`, sc.px + Math.min(r, 400), sc.py - 24);
+  }
+
+  // ---------------------------------------------------------------------
+  // Edge autoscroll: a drag held past the viewport edge pans the view at a
+  // speed that grows with the overshoot, and the drag keeps extending.
+
+  function autoscrollTick() {
+    autoscrollRaf = 0;
+    const e = lastDragEvent;
+    const id = pointerDownTool;
+    if (!pressed || !e || !id || !AUTOSCROLL_TOOLS.has(id) || !overlay || !editor.summary) return;
+    const r = overlay.getBoundingClientRect();
+    const M = 4;
+    const speed = (past: number) => (past > 0 ? Math.min(40, 2 + past * 0.4) : 0);
+    let px = speed(e.clientX - (r.right - M)) - speed(r.left + M - e.clientX);
+    let py = speed(e.clientY - (r.bottom - M)) - speed(r.top + M - e.clientY);
+    // Stop once the document's far edge is well inside the view.
+    const s = editor.summary;
+    const tl = editor.toView(0, 0);
+    const br = editor.toView(s.width, s.height);
+    const slack = 64;
+    if (px > 0 && br.x < r.width - slack) px = 0;
+    if (px < 0 && tl.x > slack) px = 0;
+    if (py > 0 && br.y < r.height - slack) py = 0;
+    if (py < 0 && tl.y > slack) py = 0;
+    if (!px && !py) return;
+    editor.panBy(-px, -py);
+    TOOLS[id]?.move?.(editor, pointer(e), true);
+    drawOverlay();
+    autoscrollRaf = requestAnimationFrame(autoscrollTick);
+  }
+
+  function maybeAutoscroll() {
+    if (!autoscrollRaf) autoscrollRaf = requestAnimationFrame(autoscrollTick);
+  }
+
+  function stopAutoscroll() {
+    if (autoscrollRaf) cancelAnimationFrame(autoscrollRaf);
+    autoscrollRaf = 0;
+    lastDragEvent = null;
+  }
+
+  function trackMods(e: KeyboardEvent | PointerEvent | WheelEvent) {
+    mods.ctrl = e.ctrlKey;
+    mods.alt = e.altKey;
+    mods.shift = e.shiftKey;
+    mods.meta = e.metaKey;
+  }
 
   function checker(ctx: CanvasRenderingContext2D) {
     const size = Math.max(4, Math.round(8 * dpr));
@@ -193,10 +348,11 @@
       ctx.putImageData(img, 0, 0);
     }
     const tool = TOOLS[activeToolId];
-    if (tool?.overlay) {
+    if (tool?.overlay || scrub) {
       ctx.save();
       ctx.scale(dpr, dpr);
-      tool.overlay(editor, ctx);
+      tool?.overlay?.(editor, ctx);
+      drawScrub(ctx);
       ctx.restore();
     }
   }
@@ -207,6 +363,7 @@
     const vy = e.clientY - r.top;
     const d = editor.toDoc(vx, vy);
     const isMac = navigator.platform.toLowerCase().includes("mac");
+    trackMods(e);
     return {
       x: d.x,
       y: d.y,
@@ -238,12 +395,25 @@
         return;
       }
     }
+    trackMods(e);
+    const hud = e.pointerType !== "touch" && (e.button === 2 || (e.button === 0 && e.ctrlKey && e.altKey));
+    if (hud && BRUSH_TOOLS.has(activeToolId) && !pressed) {
+      startScrub(e, activeToolId);
+      return;
+    }
+    // The right button (and extra mouse buttons) never reach a tool: a
+    // right-drag must not paint, select or move.
+    if (e.button !== 0 && e.button !== 1) {
+      overlay.releasePointerCapture?.(e.pointerId);
+      return;
+    }
     if (e.button === 1) {
       pointerDownTool = "hand";
     } else {
       pointerDownTool = activeToolId;
     }
     pressed = true;
+    lastDragEvent = e;
     TOOLS[pointerDownTool]?.down?.(editor, pointer(e));
     drawOverlay();
   }
@@ -264,9 +434,17 @@
         return;
       }
     }
+    if (scrub) {
+      moveScrub(e);
+      return;
+    }
     const events = pressed && "getCoalescedEvents" in e ? e.getCoalescedEvents() : [e];
     const tool = TOOLS[pressed ? pointerDownTool ?? activeToolId : activeToolId];
     for (const ev of events.length ? events : [e]) tool?.move?.(editor, pointer(ev), pressed);
+    if (pressed) {
+      lastDragEvent = e;
+      maybeAutoscroll();
+    }
     drawOverlay();
   }
 
@@ -276,6 +454,12 @@
       if (touches.size < 2) pinch = null;
       return;
     }
+    if (scrub) {
+      scrub = null;
+      drawOverlay();
+      return;
+    }
+    stopAutoscroll();
     if (!pressed) return;
     pressed = false;
     const id = pointerDownTool ?? activeToolId;
@@ -305,11 +489,37 @@
     return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
   }
 
+  const ARROWS: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+
+  /** A modifier changed mid-drag without the pointer moving: re-run the drag. */
+  function modifierChanged(e: KeyboardEvent) {
+    trackMods(e);
+    if (e.key === "Alt") altHeld = e.type === "keydown";
+    if (!["Shift", "Alt", "Control", "Meta"].includes(e.key)) return;
+    if (pressed && lastDragEvent && pointerDownTool) {
+      const held = { shift: e.shiftKey, alt: e.altKey };
+      const p = { ...pointer(lastDragEvent), ...held };
+      trackMods(e);
+      TOOLS[pointerDownTool]?.move?.(editor, p, true);
+      drawOverlay();
+    }
+  }
+
   function onKeyDown(e: KeyboardEvent) {
+    modifierChanged(e);
     if (isTyping(e.target) || e.defaultPrevented) return;
     if (e.code === "Space" && !spaceHeld) {
       spaceHeld = true;
       e.preventDefault();
+      return;
+    }
+    // Cmd/Ctrl+arrow nudges the selected pixels from any tool (Shift ×10).
+    const mac = navigator.platform.toLowerCase().includes("mac");
+    const arrow = ARROWS[e.key];
+    if (arrow && (mac ? e.metaKey : e.ctrlKey) && !e.altKey && editor.summary?.selection && !["transform", "crop", "perspective-crop"].includes(activeToolId)) {
+      e.preventDefault();
+      const k = e.shiftKey ? 10 : 1;
+      void nudgeSelectedPixels(editor, arrow[0] * k, arrow[1] * k);
       return;
     }
     const tool = TOOLS[activeToolId];
@@ -324,7 +534,15 @@
   }
 
   function onKeyUp(e: KeyboardEvent) {
+    modifierChanged(e);
     if (e.code === "Space") spaceHeld = false;
+    if (!isTyping(e.target) && (TOOLS[activeToolId] as ToolExt | undefined)?.keyup?.(editor, e)) drawOverlay();
+  }
+
+  function onBlur() {
+    Object.assign(mods, { ctrl: false, alt: false, shift: false, meta: false });
+    altHeld = false;
+    scrub = null;
   }
 
   onMount(() => {
@@ -354,11 +572,14 @@
     raf = requestAnimationFrame(tick);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       ro.disconnect();
       cancelAnimationFrame(raf);
+      stopAutoscroll();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
     };
   });
 

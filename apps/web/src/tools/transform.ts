@@ -1,9 +1,10 @@
-// Free transform: a box around the active layer (or the selected pixels)
-// with eight handles. Corner handles scale proportionally by default for
+// Free transform: a box around the selected layers (several layers or a
+// group transform as one box), or the selected pixels, with eight handles. Corner handles scale proportionally by default for
 // pixel and text layers (shift unlocks, as in Photoshop 2019+), alt scales
 // from the centre, dragging outside rotates (shift snaps 15°), Cmd/Ctrl-drag
 // a corner distorts. A snapshot of the layer previews the result live;
-// Enter, double-click or Apply commits, Escape cancels.
+// Enter, double-click or Apply commits, Escape cancels. Moving the box snaps
+// it to the canvas, other layers and guides (Control disables).
 
 import type { EditorStore } from "../lib/editor.svelte";
 import type { LayerInfo, Rect, ShapeData, TextData } from "../engine/types";
@@ -12,7 +13,10 @@ import { renderText, textBox } from "../lib/text";
 import type { Tool, ToolPointer } from "./types";
 import { toolSettings } from "./settings.svelte";
 import { toolState } from "./state.svelte";
-import { boxHandles, drawHandle, drawLabel, HANDLE_CURSOR, HANDLE_IDS, handleRadius, isCoarse, isUnknownOp, notReady, redraw, resizeBox, rotatePt, run, seal, setCursor, trackHover, type HandleId, type Pt, exec, reportError } from "./common";
+import { boxHandles, drawHandle, drawLabel, findLayer, HANDLE_CURSOR, HANDLE_IDS, handleRadius, isCoarse, isUnknownOp, notReady, redraw, resizeBox, rotatePt, run, seal, selectedLayerIds, setCursor, trackHover, unionBounds, type HandleId, type Pt, exec, reportError } from "./common";
+import { drawSnapGuides, snapActive, snapBox, snapTargets, snapTolerance, type Targets } from "./snap";
+import { transformFields } from "./transform-state.svelte";
+import { allLayers } from "../engine/types";
 import { applyM, drawQuad, invert, isIdentity, mul, transformPixelsInBrowser, transformSelectionInBrowser, type Matrix } from "./raster";
 
 interface Box {
@@ -30,6 +34,8 @@ interface Session {
   key: string;
   mode: "layer" | "selection";
   layer: LayerInfo;
+  /** Every layer the box transforms (the active one alone, or the multi-selection). */
+  ids: number[];
   src: Rect;
   box: Box;
   quad: Pt[] | null;
@@ -56,14 +62,25 @@ function smartOf(l: LayerInfo): SmartInfo | null {
 type DragKind = "move" | "scale" | "rotate" | "corner" | "edge";
 
 let session: Session | null = null;
-let drag: { kind: DragKind; handle: string; start: Pt; box: Box; quad: Pt[] | null; moved: boolean } | null = null;
+let drag: { kind: DragKind; handle: string; start: Pt; box: Box; quad: Pt[] | null; moved: boolean; targets: Targets | null; guides: Targets | null } | null = null;
 let lastDown = 0;
 let busy = false;
 
 function sessionKey(ed: EditorStore) {
   const l = ed.active;
   const sel = ed.summary?.selection?.bounds;
-  return l ? `${l.id}:${l.rev}:${JSON.stringify(l.bounds)}:${JSON.stringify(sel)}` : "";
+  if (!l) return "";
+  const ids = selectedLayerIds(ed);
+  const parts = ids.map((id) => {
+    const x = findLayer(ed, id);
+    return x ? `${x.id}.${x.rev}.${JSON.stringify(x.bounds)}.${x.children?.map((c) => c.rev).join(",") ?? ""}` : "";
+  });
+  return `${l.id}:${parts.join("|")}:${JSON.stringify(sel)}`;
+}
+
+/** Several layers, or a group: the box is their common bounds. */
+function isMulti(s: Session) {
+  return s.mode === "layer" && (s.ids.length > 1 || s.layer.kind === "group");
 }
 
 function matrixOf(s: Session): Matrix {
@@ -105,6 +122,27 @@ function changed(s: Session) {
 function sync(s: Session | null) {
   toolState.transformActive = !!s && changed(s);
   toolState.transformInfo = s ? { w: Math.round(s.box.w), h: Math.round(s.box.h), angle: Math.round(((s.box.angle * 180) / Math.PI) * 10) / 10 } : { w: 0, h: 0, angle: 0 };
+  const f = transformFields;
+  f.ready = !!s;
+  f.distorted = !!s?.quad;
+  if (s) {
+    const r = localRect(s.box);
+    f.x = round2(r.x);
+    f.y = round2(r.y);
+    f.w = round2(r.w);
+    f.h = round2(r.h);
+    f.scale = round2((s.box.w / Math.max(1e-6, s.src.w)) * 100);
+    f.angle = round2(normDeg((s.box.angle * 180) / Math.PI));
+    f.layers = s.mode === "layer" ? s.ids.length : 1;
+  }
+}
+
+function round2(v: number) {
+  return Math.round(v * 100) / 100;
+}
+
+function normDeg(d: number) {
+  return ((((d + 180) % 360) + 360) % 360) - 180;
 }
 
 async function takeSnapshot(ed: EditorStore, s: Session) {
@@ -112,11 +150,28 @@ async function takeSnapshot(ed: EditorStore, s: Session) {
   const size = Math.min(2048, Math.max(doc.width, doc.height));
   const scale = size / Math.max(doc.width, doc.height);
   try {
-    const raw = await ed.engine.call<Uint8Array>("thumbnail", s.layer.id, size);
-    const tw = raw[0] | (raw[1] << 8);
-    const th = raw[2] | (raw[3] << 8);
-    const full = new OffscreenCanvas(tw, th);
-    full.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(raw.buffer as ArrayBuffer, raw.byteOffset + 4, tw * th * 4), tw, th), 0, 0);
+    // Several layers: their thumbnails stacked bottom to top, each at its
+    // own opacity (the preview then draws at full opacity).
+    const order = allLayers(doc.layers).map((l) => l.id);
+    const ids = s.mode === "layer" ? [...s.ids].sort((a, b) => order.indexOf(a) - order.indexOf(b)) : [s.layer.id];
+    let full: OffscreenCanvas | null = null;
+    let tw = 0;
+    for (const id of ids) {
+      const raw = await ed.engine.call<Uint8Array>("thumbnail", id, size);
+      tw = raw[0] | (raw[1] << 8);
+      const th = raw[2] | (raw[3] << 8);
+      const one = new OffscreenCanvas(tw, th);
+      one.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(raw.buffer as ArrayBuffer, raw.byteOffset + 4, tw * th * 4), tw, th), 0, 0);
+      if (ids.length === 1) {
+        full = one;
+        break;
+      }
+      full ??= new OffscreenCanvas(tw, th);
+      const g = full.getContext("2d")!;
+      g.globalAlpha = findLayer(ed, id)?.opacity ?? 1;
+      g.drawImage(one, 0, 0);
+    }
+    if (!full) return;
     const k = tw / doc.width || scale;
     const R = s.snapRect;
     const w = Math.max(1, Math.round(R.w * k));
@@ -148,19 +203,22 @@ function begin(ed: EditorStore): Session | null {
   const selBounds = doc.selection?.bounds ?? null;
   let src: Rect | null = null;
   let mode: Session["mode"] = "layer";
+  let ids = [l.id];
   if (selBounds && l.kind === "pixel") {
     mode = "selection";
     src = selBounds;
-  } else if (l.bounds && l.bounds.w > 0 && l.bounds.h > 0) {
-    src = l.bounds;
-  } else if (l.kind === "group" || l.kind === "adjustment" || l.kind === "fill") {
-    src = { x: 0, y: 0, w: doc.width, h: doc.height };
+  } else {
+    ids = selectedLayerIds(ed);
+    const u = unionBounds(ed, ids);
+    if (u && u.w > 0 && u.h > 0) src = u;
+    else if (l.kind === "group" || l.kind === "adjustment" || l.kind === "fill") src = { x: 0, y: 0, w: doc.width, h: doc.height };
   }
   if (!src) return null;
   const s: Session = {
     key: sessionKey(ed),
     mode,
     layer: l,
+    ids,
     src,
     box: { cx: src.x + src.w / 2, cy: src.y + src.h / 2, w: src.w, h: src.h, angle: 0, flipX: false, flipY: false },
     quad: null,
@@ -171,7 +229,7 @@ function begin(ed: EditorStore): Session | null {
     initAxisAligned: true,
     hidden: false,
   };
-  const smart = mode === "layer" ? smartOf(l) : null;
+  const smart = mode === "layer" && ids.length === 1 ? smartOf(l) : null;
   if (smart) {
     // Start from the object's own corners, which stay exact once rotated.
     const [tl, tr, br, bl] = smart.quad;
@@ -213,15 +271,15 @@ function ensure(ed: EditorStore): Session | null {
 
 /** Hide the original while the preview stands in for it (viewport only). */
 async function hideOriginal(ed: EditorStore, s: Session) {
-  if (s.hidden || s.mode !== "layer" || !s.layer.visible) return;
+  if (s.hidden || s.mode !== "layer" || !s.ids.some((id) => findLayer(ed, id)?.visible)) return;
   s.hidden = true;
-  await ed.setPreviewHidden([...ed.previewHidden, s.layer.id]);
+  await ed.setPreviewHidden([...ed.previewHidden, ...s.ids]);
 }
 
 async function unhide(ed: EditorStore, s: Session) {
   if (!s.hidden) return;
   s.hidden = false;
-  await ed.setPreviewHidden(ed.previewHidden.filter((id) => id !== s.layer.id));
+  await ed.setPreviewHidden(ed.previewHidden.filter((id) => !s.ids.includes(id)));
 }
 
 function bilinear(q: Pt[], src: Rect, p: Pt): Pt {
@@ -270,7 +328,7 @@ async function commitText(ed: EditorStore, s: Session, m: Matrix): Promise<boole
 
 async function commitEngine(ed: EditorStore, s: Session, m: Matrix): Promise<boolean> {
   const target = s.quad ? { quad: s.quad } : { matrix: m };
-  const op = s.mode === "selection" ? { op: "transform.selection-pixels", id: s.layer.id, ...target } : { op: "transform.layer", ids: [s.layer.id], ...target, resample: "bicubic" };
+  const op = s.mode === "selection" ? { op: "transform.selection-pixels", id: s.layer.id, ...target } : { op: "transform.layer", ids: s.ids, ...target, resample: "bicubic" };
   try {
     await exec(ed, op);
     return true;
@@ -281,7 +339,7 @@ async function commitEngine(ed: EditorStore, s: Session, m: Matrix): Promise<boo
     }
   }
   // The transform backend has not landed: pixel layers can be done here.
-  if (s.layer.kind !== "pixel") {
+  if (s.layer.kind !== "pixel" || isMulti(s)) {
     notReady(ed, t("Transforming this kind of layer"));
     return false;
   }
@@ -302,7 +360,8 @@ export async function commitTransform(ed: EditorStore) {
     await unhide(ed, s);
     if (!changed(s)) return;
     const m = matrixOf(s);
-    if (smartOf(s.layer) && s.mode === "layer") {
+    if (isMulti(s)) await commitEngine(ed, s, m);
+    else if (smartOf(s.layer) && s.mode === "layer") {
       await run(ed, { op: "layer.smart-transform", id: s.layer.id, quad: cornersOf(s).map((q) => ({ x: q.x, y: q.y })) });
       await seal(ed);
     } else if (s.layer.kind === "shape" && s.layer.shape && s.mode === "layer") await commitShape(ed, s, m);
@@ -408,7 +467,7 @@ export const transform: Tool = {
     }
     lastDown = now;
     const h = hitHandle(ed, s, p);
-    const base = { start: { x: p.x, y: p.y }, box: { ...s.box }, quad: s.quad ? s.quad.map((q) => ({ ...q })) : null, moved: false };
+    const base = { start: { x: p.x, y: p.y }, box: { ...s.box }, quad: s.quad ? s.quad.map((q) => ({ ...q })) : null, moved: false, targets: null as Targets | null, guides: null as Targets | null };
     if (h && (p.mod || s.quad)) {
       // Distort: switch to free corners.
       if (!s.quad) s.quad = corners.map((q) => ({ ...q }));
@@ -417,7 +476,7 @@ export const transform: Tool = {
     } else if (h) {
       drag = { ...base, kind: "scale", handle: h };
     } else if (inside) {
-      drag = { ...base, kind: "move", handle: "" };
+      drag = { ...base, kind: "move", handle: "", targets: snapTargets(ed, s.mode === "layer" ? s.ids : []) };
     } else {
       drag = { ...base, kind: "rotate", handle: "" };
     }
@@ -440,10 +499,28 @@ export const transform: Tool = {
     const dx = p.x - d.start.x;
     const dy = p.y - d.start.y;
     switch (d.kind) {
-      case "move":
-        if (s.quad && d.quad) s.quad = d.quad.map((q) => ({ x: q.x + dx, y: q.y + dy }));
-        else s.box = { ...d.box, cx: d.box.cx + (p.shift ? (Math.abs(dx) > Math.abs(dy) ? dx : 0) : dx), cy: d.box.cy + (p.shift ? (Math.abs(dx) > Math.abs(dy) ? 0 : dy) : dy) };
+      case "move": {
+        let mx = p.shift ? (Math.abs(dx) > Math.abs(dy) ? dx : 0) : dx;
+        let my = p.shift ? (Math.abs(dx) > Math.abs(dy) ? 0 : dy) : dy;
+        d.guides = null;
+        if (d.targets && snapActive()) {
+          // Snap the upright bounds of where the box would go.
+          const from = d.quad ?? cornersOf({ ...s, quad: null, box: d.box });
+          const xs = from.map((q) => q.x + mx);
+          const ys = from.map((q) => q.y + my);
+          const x0 = Math.min(...xs);
+          const y0 = Math.min(...ys);
+          const sn = snapBox({ x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0 }, d.targets, snapTolerance(ed));
+          if (!(p.shift && mx === 0)) mx += sn.dx;
+          else sn.guides.xs = [];
+          if (!(p.shift && my === 0)) my += sn.dy;
+          else sn.guides.ys = [];
+          d.guides = sn.guides;
+        }
+        if (s.quad && d.quad) s.quad = d.quad.map((q) => ({ x: q.x + mx, y: q.y + my }));
+        else s.box = { ...d.box, cx: d.box.cx + mx, cy: d.box.cy + my };
         break;
+      }
       case "scale": {
         const b = d.box;
         const c = { x: b.cx, y: b.cy };
@@ -527,7 +604,7 @@ export const transform: Tool = {
     if (s.snapshot && moved && (!s.quad || s.initAxisAligned)) {
       ctx.save();
       ctx.imageSmoothingEnabled = true;
-      ctx.globalAlpha = s.layer.opacity ?? 1;
+      ctx.globalAlpha = isMulti(s) ? 1 : (s.layer.opacity ?? 1);
       if (s.quad) {
         drawQuad(ctx, s.snapshot.canvas, s.snapshot.w, s.snapshot.h, v, 6);
       } else {
@@ -562,6 +639,7 @@ export const transform: Tool = {
     ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
+    if (drag?.kind === "move") drawSnapGuides(ed, ctx, drag.guides);
     if (drag?.moved) {
       const label =
         drag.kind === "rotate"
@@ -573,3 +651,54 @@ export const transform: Tool = {
     }
   },
 };
+
+/**
+ * Set the box from the options bar's numeric fields, applied live. X/Y are
+ * the unrotated box's top-left; W/H resize about the centre (linked keeps
+ * the proportions); Scale is a percentage of the starting width, about the
+ * centre; Angle is clockwise degrees.
+ */
+export function setTransformField(ed: EditorStore, field: "x" | "y" | "w" | "h" | "scale" | "angle", value: number, linked = toolSettings.transformKeepRatio) {
+  const s = ensure(ed);
+  if (!s || !Number.isFinite(value)) return;
+  if (s.quad) {
+    // A distorted box only moves.
+    if (field !== "x" && field !== "y") return;
+    const xs = s.quad.map((q) => q.x);
+    const ys = s.quad.map((q) => q.y);
+    const d = field === "x" ? value - Math.min(...xs) : value - Math.min(...ys);
+    s.quad = s.quad.map((q) => (field === "x" ? { x: q.x + d, y: q.y } : { x: q.x, y: q.y + d }));
+  } else {
+    const b = { ...s.box };
+    const ratio = b.h / Math.max(1e-6, b.w);
+    switch (field) {
+      case "x":
+        b.cx = value + b.w / 2;
+        break;
+      case "y":
+        b.cy = value + b.h / 2;
+        break;
+      case "w":
+        b.w = Math.max(1, value);
+        if (linked) b.h = Math.max(1, b.w * ratio);
+        break;
+      case "h":
+        b.h = Math.max(1, value);
+        if (linked) b.w = Math.max(1, b.h / ratio);
+        break;
+      case "scale": {
+        const k = Math.max(0.01, value / 100);
+        b.w = Math.max(1, s.src.w * k);
+        b.h = linked ? Math.max(1, s.src.h * k) : b.h;
+        break;
+      }
+      case "angle":
+        b.angle = (normDeg(value) * Math.PI) / 180;
+        break;
+    }
+    s.box = b;
+  }
+  void hideOriginal(ed, s);
+  sync(s);
+  redraw(ed);
+}

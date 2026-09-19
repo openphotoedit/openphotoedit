@@ -21,11 +21,27 @@ pub struct History {
     pub max_steps: usize,
     /// The merge key of the most recent record, reset by anything else.
     open_merge: Option<String>,
+    /// An open transaction: every command until the matching `end` becomes
+    /// one undo step.
+    txn: Option<Txn>,
+}
+
+/// State of an open `edit.begin` … `edit.end` transaction.
+struct Txn {
+    /// The document as it was at the outermost `begin`.
+    before: Document,
+    /// The label the step gets; the first command's label when `begin` gave
+    /// none.
+    label: Option<String>,
+    /// Nested `begin`s; the step is recorded when this returns to zero.
+    depth: u32,
+    /// Whether any recorded (document-changing) command ran inside.
+    changed: bool,
 }
 
 impl Default for History {
     fn default() -> Self {
-        History { undo: Vec::new(), redo: Vec::new(), budget_bytes: 1 << 30, max_steps: 200, open_merge: None }
+        History { undo: Vec::new(), redo: Vec::new(), budget_bytes: 1 << 30, max_steps: 200, open_merge: None, txn: None }
     }
 }
 
@@ -37,6 +53,12 @@ impl History {
     /// Record `before` as the state an action is about to leave. Consecutive
     /// records with the same merge key (a slider drag) collapse into one step.
     pub fn record(&mut self, before: &Document, label: &str, merge_key: Option<&str>) {
+        if let Some(t) = self.txn.as_mut() {
+            // Inside a transaction the step is recorded at `end`.
+            t.changed = true;
+            t.label.get_or_insert_with(|| label.to_string());
+            return;
+        }
         if let (Some(k), Some(open)) = (merge_key, &self.open_merge) {
             if k == open && !self.undo.is_empty() {
                 self.redo.clear();
@@ -47,6 +69,66 @@ impl History {
         self.open_merge = merge_key.map(String::from);
         self.redo.clear();
         self.trim(before);
+    }
+
+    /// Open a transaction: commands until the matching [`History::end`]
+    /// become a single undo step labelled `label` (or the first command's
+    /// label). Transactions nest; only the outermost one records.
+    pub fn begin(&mut self, current: &Document, label: Option<&str>) {
+        match self.txn.as_mut() {
+            Some(t) => t.depth += 1,
+            None => {
+                self.open_merge = None;
+                self.txn = Some(Txn { before: current.clone(), label: label.map(String::from), depth: 1, changed: false });
+            }
+        }
+    }
+
+    /// Close one level of transaction. At the outermost level, record one
+    /// step if anything changed; returns that step's label. A stray `end`
+    /// with no open transaction does nothing, so callers can end in a
+    /// `finally` without tracking state.
+    pub fn end(&mut self) -> Option<String> {
+        let t = self.txn.as_mut()?;
+        t.depth -= 1;
+        if t.depth > 0 {
+            return None;
+        }
+        let t = self.txn.take()?;
+        if !t.changed {
+            return None;
+        }
+        let label = t.label.unwrap_or_else(|| "Edit".to_string());
+        self.record(&t.before, &label, None);
+        self.open_merge = None;
+        Some(label)
+    }
+
+    /// Abandon an open transaction (all levels) and return the document to
+    /// how it was at `begin`. Nothing is recorded.
+    pub fn cancel(&mut self, current: &mut Document) -> bool {
+        match self.txn.take() {
+            Some(t) => {
+                let changed = t.changed;
+                *current = t.before;
+                changed
+            }
+            None => false,
+        }
+    }
+
+    pub fn in_transaction(&self) -> bool {
+        self.txn.is_some()
+    }
+
+    /// Close every level of an open transaction, recording its step. Undo,
+    /// redo and history jumps call this first so they never act on half a
+    /// gesture.
+    pub fn commit_open(&mut self) {
+        if let Some(t) = self.txn.as_mut() {
+            t.depth = 1;
+            self.end();
+        }
     }
 
     /// Close any open merge so the next record starts a new step.
@@ -62,6 +144,7 @@ impl History {
     }
 
     pub fn undo(&mut self, current: &mut Document) -> Option<String> {
+        self.commit_open();
         let s = self.undo.pop()?;
         self.open_merge = None;
         let label = s.label.clone();
@@ -71,6 +154,7 @@ impl History {
     }
 
     pub fn redo(&mut self, current: &mut Document) -> Option<String> {
+        self.commit_open();
         let s = self.redo.pop()?;
         self.open_merge = None;
         let label = s.label.clone();
@@ -81,6 +165,7 @@ impl History {
 
     /// Jump to a point: `undo_len` entries remaining on the undo stack.
     pub fn go_to(&mut self, undo_len: usize, current: &mut Document) {
+        self.commit_open();
         while self.undo.len() > undo_len {
             if self.undo(current).is_none() {
                 break;
@@ -104,6 +189,7 @@ impl History {
         self.undo.clear();
         self.redo.clear();
         self.open_merge = None;
+        self.txn = None;
     }
 
     fn trim(&mut self, live: &Document) {
@@ -154,5 +240,52 @@ mod tests {
         h.go_to(0, &mut doc);
         assert_eq!(doc.resolution, 72.0);
         assert_eq!(h.redo_labels(), vec!["a", "drag"]);
+    }
+
+    #[test]
+    fn transaction_is_one_step() {
+        let mut doc = Document::new(10, 10);
+        let mut h = History::new();
+        h.record(&doc, "first", None);
+        doc.resolution = 90.0;
+        h.begin(&doc, Some("Duplicate and move"));
+        h.record(&doc, "Duplicate", None);
+        doc.resolution = 100.0;
+        h.begin(&doc, None); // nested: no extra step
+        h.record(&doc, "Move", Some("offset"));
+        doc.resolution = 110.0;
+        assert_eq!(h.end(), None, "inner end records nothing");
+        h.record(&doc, "Move", Some("offset"));
+        doc.resolution = 120.0;
+        assert_eq!(h.end().as_deref(), Some("Duplicate and move"));
+        assert_eq!(h.undo_labels(), vec!["first", "Duplicate and move"]);
+        h.undo(&mut doc);
+        assert_eq!(doc.resolution, 90.0, "one undo reverts the whole gesture");
+        h.redo(&mut doc);
+        assert_eq!(doc.resolution, 120.0);
+    }
+
+    #[test]
+    fn empty_stray_and_cancelled_transactions_record_nothing() {
+        let mut doc = Document::new(10, 10);
+        let mut h = History::new();
+        h.begin(&doc, Some("nothing"));
+        assert_eq!(h.end(), None);
+        assert_eq!(h.end(), None, "stray end is harmless");
+        assert!(!h.can_undo());
+        h.begin(&doc, None);
+        h.record(&doc, "Move", None);
+        doc.resolution = 300.0;
+        assert!(h.cancel(&mut doc));
+        assert_eq!(doc.resolution, 72.0);
+        assert!(!h.can_undo() && !h.in_transaction());
+        // Undo inside an open transaction commits it first.
+        h.begin(&doc, None);
+        h.record(&doc, "Move", None);
+        doc.resolution = 150.0;
+        h.undo(&mut doc);
+        assert_eq!(doc.resolution, 72.0);
+        assert!(!h.in_transaction());
+        assert_eq!(h.redo_labels(), vec!["Move"]);
     }
 }

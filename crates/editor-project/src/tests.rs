@@ -242,3 +242,118 @@ fn newer_files_open_when_they_allow_it() {
     });
     assert_eq!(load(&too_new, &LoadOptions::default()).err(), Some(Error::TooNew(2)));
 }
+
+// ---------------------------------------------------------------------------
+// Value limits (validate.rs). Each case saves an ordinary project with the
+// crate's own writer, tampers one value in the manifest, and must be refused
+// with an error that names the problem.
+
+fn refused(f: impl Fn(&mut Value)) -> String {
+    let bytes = rewrite_manifest(&save(&sample()).unwrap(), f);
+    match load(&bytes, &LoadOptions::default()) {
+        Err(Error::Invalid(msg)) => msg,
+        Err(e) => panic!("refused with the wrong error: {e:?}"),
+        Ok(_) => panic!("accepted"),
+    }
+}
+
+/// The Curves adjustment inside the sample's group.
+fn adj(v: &mut Value) -> &mut Value {
+    &mut layer_at(v, 1)["kind"]["children"][1]["kind"]["adjustment"]
+}
+
+/// Top-level layer `i` of the sample (0 bg, 1 group, 2 text, 3 shape, 4 smart, 5 smart doc).
+fn layer_at(v: &mut Value, i: usize) -> &mut Value {
+    &mut v["document"]["layers"][i]
+}
+
+#[test]
+fn ordinary_and_legacy_projects_still_load() {
+    let bytes = save(&sample()).unwrap();
+    let legacy = rewrite_manifest(&bytes, |v| v["format"] = LEGACY_FORMAT.into());
+    let back = load(&legacy, &LoadOptions::default()).unwrap();
+    same_doc(&sample(), &back.doc);
+}
+
+#[test]
+fn far_away_rasters_are_refused() {
+    // The probe case: accepted before, the next edit looped to x = 2^31.
+    let msg = refused(|v| layer_at(v, 0)["kind"]["raster"]["x"] = 2_147_483_646i64.into());
+    assert!(msg.contains("placed at x = 2147483646"), "{msg}");
+    let msg = refused(|v| layer_at(v, 1)["kind"]["children"][0]["mask"]["y"] = (-5_000_000).into());
+    assert!(msg.contains("mask") && msg.contains("y = -5000000"), "{msg}");
+    let msg = refused(|v| layer_at(v, 2)["kind"]["raster"]["y"] = 1.5e6.into());
+    assert!(msg.contains("Text"), "{msg}");
+}
+
+#[test]
+fn huge_smart_object_quads_are_refused() {
+    // The probe case: corners at 1e7 implied a 10⁷ × 10⁷ warp on the next edit.
+    let msg = refused(|v| layer_at(v, 4)["kind"]["quad"] = serde_json::json!([{"x": 0, "y": 0}, {"x": 1e7, "y": 0}, {"x": 1e7, "y": 1e7}, {"x": 0, "y": 1e7}]));
+    assert!(msg.contains("corner"), "{msg}");
+    // Within the offset limit but a 20,000² box: 400 MP.
+    let msg = refused(|v| layer_at(v, 4)["kind"]["quad"] = serde_json::json!([{"x": 0, "y": 0}, {"x": 20000, "y": 0}, {"x": 20000, "y": 20000}, {"x": 0, "y": 20000}]));
+    assert!(msg.contains("20000×20000"), "{msg}");
+    // A number too large for f32 becomes infinity if it gets past the check.
+    let msg = refused(|v| layer_at(v, 4)["kind"]["quad"][2]["x"] = 1e39.into());
+    assert!(msg.contains("corner"), "{msg}");
+}
+
+#[test]
+fn too_many_layers_are_refused() {
+    let msg = refused(|v| {
+        let layers = v["document"]["layers"].as_array_mut().unwrap();
+        for i in 0..validate::MAX_LAYERS {
+            layers.push(serde_json::json!({"id": 1000 + i, "name": "x", "kind": {"type": "adjustment", "adjustment": {"kind": "invert"}}}));
+        }
+    });
+    assert!(msg.contains("more than 10000 layers"), "{msg}");
+}
+
+#[test]
+fn deep_group_nesting_is_refused() {
+    let nest = |depth: usize| {
+        move |v: &mut Value| {
+            let mut l = serde_json::json!({"id": 5000, "name": "leaf", "kind": {"type": "adjustment", "adjustment": {"kind": "invert"}}});
+            for d in 0..depth - 1 {
+                l = serde_json::json!({"id": 6000 + d, "name": "g", "kind": {"type": "group", "children": [l], "pass_through": true, "expanded": false}});
+            }
+            v["document"]["layers"].as_array_mut().unwrap().push(l);
+        }
+    };
+    let ok = rewrite_manifest(&save(&sample()).unwrap(), nest(validate::MAX_GROUP_DEPTH));
+    assert!(load(&ok, &LoadOptions::default()).is_ok(), "{} levels are allowed", validate::MAX_GROUP_DEPTH);
+    let msg = refused(nest(validate::MAX_GROUP_DEPTH + 1));
+    assert!(msg.contains("nested more than 32"), "{msg}");
+}
+
+#[test]
+fn long_names_are_refused() {
+    let msg = refused(|v| layer_at(v, 0)["name"] = "n".repeat(validate::MAX_NAME_BYTES + 1).into());
+    assert!(msg.contains("name is 16385 bytes"), "{msg}");
+}
+
+#[test]
+fn out_of_range_parameters_are_refused() {
+    // Adjustments: an f32-overflowing value, a range the engine relies on,
+    // too many curve points, a lookup table that does not match its size.
+    let msg = refused(|v| adj(v)["red"][0][1] = 1e39.into());
+    assert!(msg.contains("curves adjustment") && msg.contains("out-of-range"), "{msg}");
+    let msg = refused(|v| adj(v)["red"] = serde_json::json!((0..300).map(|i| [i % 256, i % 256]).collect::<Vec<_>>()));
+    assert!(msg.contains("300 entries"), "{msg}");
+    let msg = refused(|v| *adj(v) = serde_json::json!({"kind": "levels", "master": {"in_black": 0, "in_white": 255, "gamma": 50, "out_black": 0, "out_white": 255}}));
+    assert!(msg.contains("gamma"), "{msg}");
+    let msg = refused(|v| *adj(v) = serde_json::json!({"kind": "posterize", "levels": 0}));
+    assert!(msg.contains("levels"), "{msg}");
+    let msg = refused(|v| *adj(v) = serde_json::json!({"kind": "color-lookup", "name": "x", "size": 3, "table": vec![0.0; 9]}));
+    assert!(msg.contains("expected 81"), "{msg}");
+    // Layer style, text and shape sizes.
+    let msg = refused(|v| layer_at(v, 1)["kind"]["children"][0]["effects"]["drop_shadow"]["size"] = 1e6.into());
+    assert!(msg.contains("layer style") && msg.contains("size"), "{msg}");
+    let msg = refused(|v| layer_at(v, 2)["kind"]["data"]["font_size"] = 1e5.into());
+    assert!(msg.contains("font_size"), "{msg}");
+    let msg = refused(|v| layer_at(v, 3)["kind"]["data"]["points"] = serde_json::json!(vec![serde_json::json!({"x": 0, "y": 0}); 100_001]));
+    assert!(msg.contains("100001 entries"), "{msg}");
+    let msg = refused(|v| layer_at(v, 0)["opacity"] = 7.into());
+    assert!(msg.contains("opacity"), "{msg}");
+}

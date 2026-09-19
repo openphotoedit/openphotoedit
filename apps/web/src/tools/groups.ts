@@ -2,6 +2,10 @@
 // groups, the Lite markup set, and the shortcut letters. Icons are Lucide
 // names (`@lucide/svelte/icons/<icon>`); labels go through t() when shown.
 
+// Liquify has no toolbar slot (Photoshop keeps it under Filter › Liquify,
+// Shift+Cmd/Ctrl+X); importing it registers the tool so the menu item is on.
+import "./liquify.svelte";
+
 export interface ToolEntry {
   id: string;
   label: string;

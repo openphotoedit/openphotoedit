@@ -451,3 +451,58 @@ fn smart_objects_move_their_quad_and_stay_smart() {
     let got = editor_core::pixels::read_layer(&ed.doc, id, Rect::new(10, 10, 40, 20)).unwrap();
     assert_eq!(got, px);
 }
+
+/// Two layers at different positions: `(x, w)` of each, and its pixels.
+fn two_layers(ed: &mut Editor) -> (LayerId, LayerId, Vec<u8>, Vec<u8>) {
+    ed.exec(json!({"op": "doc.new", "width": 100, "height": 40}), &[]).unwrap();
+    let pa: Vec<u8> = (0..6 * 4).flat_map(|i| [i as u8 * 10, 0, 0, 255]).collect();
+    let pb: Vec<u8> = (0..8 * 4).flat_map(|i| [0, 0, i as u8 * 7, 255]).collect();
+    let a = ed.exec(json!({"op": "layer.import", "width": 6, "height": 4, "x": 10, "y": 5}), &pa).unwrap()["data"]["id"].as_u64().unwrap() as LayerId;
+    let b = ed.exec(json!({"op": "layer.import", "width": 8, "height": 4, "x": 60, "y": 20}), &pb).unwrap()["data"]["id"].as_u64().unwrap() as LayerId;
+    (a, b, pa, pb)
+}
+
+fn mirror_rows(px: &[u8], w: usize) -> Vec<u8> {
+    px.chunks_exact(w * 4).flat_map(|row| row.chunks_exact(4).rev().flatten().copied().collect::<Vec<u8>>()).collect()
+}
+
+/// Flip of a multi-selection mirrors the layers as one box about the centre
+/// of their combined bounds, so they swap sides; the active layer's own
+/// centre (what the menu used) would have left the other layer far away.
+#[test]
+fn flip_several_layers_about_their_combined_centre() {
+    let mut ed = editor();
+    let (a, b, pa, pb) = two_layers(&mut ed);
+    // Union: x 10..68, y 5..24 → centre x 39.
+    let r = exec(&mut ed, json!({"op": "transform.flip", "ids": [a, b], "horizontal": true}));
+    assert_eq!(r["label"], "Flip Horizontal");
+    let ba = ed.doc.find(a).unwrap().content_bounds().unwrap();
+    let bb = ed.doc.find(b).unwrap().content_bounds().unwrap();
+    assert_eq!(ba, Rect::new(62, 5, 6, 4), "a mirrored to the right edge of the union");
+    assert_eq!(bb, Rect::new(10, 20, 8, 4), "b mirrored to the left edge of the union");
+    assert_eq!(layer_px(&ed, a, ba), mirror_rows(&pa, 6), "pixels mirrored exactly");
+    assert_eq!(layer_px(&ed, b, bb), mirror_rows(&pb, 8));
+    assert_eq!(ed.history.undo_labels().last(), Some(&"Flip Horizontal"));
+
+    // Vertical: union y 5..24 → a goes to the bottom, b to the top.
+    exec(&mut ed, json!({"op": "transform.flip", "ids": [a, b], "horizontal": false}));
+    assert_eq!(ed.doc.find(a).unwrap().content_bounds().unwrap().y, 20);
+    assert_eq!(ed.doc.find(b).unwrap().content_bounds().unwrap().y, 5);
+
+    // No ids: the active layer flips in place.
+    exec(&mut ed, json!({"op": "layer.set-active", "id": a}));
+    let before = ed.doc.find(a).unwrap().content_bounds().unwrap();
+    exec(&mut ed, json!({"op": "transform.flip", "horizontal": true}));
+    assert_eq!(ed.doc.find(a).unwrap().content_bounds().unwrap(), before);
+}
+
+/// The same box behaviour through `transform.layer` with a matrix about the
+/// union centre (what the Free Transform box sends).
+#[test]
+fn transform_layer_with_union_centre_swaps_positions() {
+    let mut ed = editor();
+    let (a, b, _, _) = two_layers(&mut ed);
+    exec(&mut ed, json!({"op": "transform.layer", "ids": [a, b], "matrix": {"a": -1, "b": 0, "c": 0, "d": 1, "e": 78, "f": 0}}));
+    assert_eq!(ed.doc.find(a).unwrap().content_bounds().unwrap().x, 62);
+    assert_eq!(ed.doc.find(b).unwrap().content_bounds().unwrap().x, 10);
+}

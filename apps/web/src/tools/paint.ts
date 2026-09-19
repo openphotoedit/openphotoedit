@@ -10,7 +10,9 @@ import { t } from "../lib/i18n";
 import type { Tool, ToolPointer } from "./types";
 import { setSizeFor, sizeFor, toolSettings } from "./settings.svelte";
 import { toolState } from "./state.svelte";
-import { digitOpacity, drawBrushCircle, drawCrosshair, FrameBatcher, hover, isUnknownOp, newStrokeId, notReady, redraw, rgba, stepSize, trackHover, type Pt, exec, reportError, requirePixels } from "./common";
+import { digitOpacity, drawBrushCircle, drawCrosshair, FrameBatcher, hover, mods, isUnknownOp, newStrokeId, notReady, redraw, rgba, setCursor, stepSize, trackHover, type Pt, exec, reportError, requirePixels } from "./common";
+import { altEyedropper } from "./eyedropper-alt";
+import { drawClonePreview } from "./clone-preview";
 
 type EngineTool = "brush" | "pencil" | "eraser" | "dodge" | "burn" | "sponge" | "blur" | "sharpen" | "smudge" | "clone" | "heal";
 
@@ -22,7 +24,14 @@ interface StrokePoint {
 
 interface Stroke {
   id: string;
+  /** Where "Shift-click draws a line from the last stroke" remembers it. */
+  key: string;
   last: StrokePoint | null;
+  /** The last point handed to the batcher. */
+  pushed: StrokePoint;
+  /** Shift held mid-drag: the stroke runs horizontally or vertically from
+   *  `anchor`; `horizontal` is decided once the pointer has moved 3 px. */
+  axis: { anchor: StrokePoint; horizontal: boolean | null } | null;
   batch: FrameBatcher<StrokePoint>;
   failed: boolean;
   source: { dx: number; dy: number } | null;
@@ -39,6 +48,7 @@ interface PaintSpec {
 // Clone/heal source, shared as Photoshop shares it between the two tools.
 let sourcePoint: Pt | null = null;
 let alignedOffset: { dx: number; dy: number } | null = null;
+/** End of the last stroke per tool, layer and target (Shift-click lines). */
 const lastEnd: Record<string, StrokePoint | null> = {};
 
 function hardnessKey(tool: string): "eraserHardness" | "brushHardness" {
@@ -93,7 +103,7 @@ function extras(tool: string, stroke: Stroke): Record<string, unknown> {
   }
 }
 
-function makePaintTool(spec: PaintSpec): Tool {
+function makePaintTool(spec: PaintSpec): Tool & { keyup(ed: EditorStore, e: KeyboardEvent): boolean } {
   let stroke: Stroke | null = null;
   const needsSource = spec.engine === "clone" || spec.engine === "heal";
 
@@ -110,7 +120,7 @@ function makePaintTool(spec: PaintSpec): Tool {
       else source = { dx: sourcePoint.x - start.x, dy: sourcePoint.y - start.y };
       if (toolSettings.cloneAligned) alignedOffset = source;
     }
-    const st: Stroke = { id: newStrokeId(spec.engine), last: null, failed: false, source, batch: null as unknown as FrameBatcher<StrokePoint> };
+    const st: Stroke = { id: newStrokeId(spec.engine), key: endKey(ed), last: null, pushed: first[first.length - 1], axis: null, failed: false, source, batch: null as unknown as FrameBatcher<StrokePoint> };
     st.batch = new FrameBatcher<StrokePoint>(async (pts) => {
       if (st.failed) return;
       const points = st.last ? [st.last, ...pts] : pts;
@@ -118,7 +128,7 @@ function makePaintTool(spec: PaintSpec): Tool {
       try {
         await exec(ed, {
           op: "paint.stroke",
-          target: paintTarget.layerId == null || paintTarget.layerId === ed.summary?.active ? paintTarget.value : "pixels",
+          target: target(ed),
           tool: spec.engine,
           brush: brushFor(ed, spec.id),
           points,
@@ -140,12 +150,44 @@ function makePaintTool(spec: PaintSpec): Tool {
     stroke = null;
     if (!st) return;
     await st.batch.done();
-    lastEnd[spec.id] = st.last;
+    lastEnd[st.key] = st.last;
     if (!st.failed) await exec(ed, { op: "paint.stroke-end", stroke_id: st.id }).catch(() => null);
     redraw(ed);
   }
 
   const sp = (p: ToolPointer): StrokePoint => ({ x: p.x, y: p.y, p: p.pointerType === "pen" ? p.pressure : 1 });
+  const target = (ed: EditorStore) => (paintTarget.layerId == null || paintTarget.layerId === ed.summary?.active ? paintTarget.value : "pixels");
+  const endKey = (ed: EditorStore) => `${spec.id}:${ed.summary?.active ?? ""}:${target(ed)}`;
+
+  /**
+   * Shift pressed mid-drag locks the stroke to horizontal or vertical from
+   * the point where Shift went down. Returns the point to send, or null
+   * while the axis is still undecided. The end of the stroke is the last
+   * projected point: nothing off-axis is sent on release.
+   */
+  function axisLock(ed: EditorStore, st: Stroke, p: ToolPointer): StrokePoint | null {
+    const q = sp(p);
+    // Coalesced pointer events can carry stale modifiers; the keyboard's
+    // state is the truth.
+    if (!p.shift && !mods.shift) {
+      st.axis = null;
+      return q;
+    }
+    st.axis ??= { anchor: st.pushed, horizontal: null };
+    const a = st.axis;
+    if (a.horizontal == null) {
+      const dx = q.x - a.anchor.x;
+      const dy = q.y - a.anchor.y;
+      if (Math.hypot(dx, dy) * ed.view.zoom < 3) return null;
+      a.horizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    return a.horizontal ? { ...q, y: a.anchor.y } : { ...q, x: a.anchor.x };
+  }
+
+  // Alt-click samples colour instead of painting (brush and pencil), as
+  // Photoshop's tools do.
+  const altSamples = spec.engine === "brush" || spec.engine === "pencil";
+  let sampling = false;
 
   // Quick Mask: brush, pencil and eraser edit the selection instead of pixels.
   // Painting white (or erasing) adds to the selection, painting dark removes
@@ -181,36 +223,68 @@ function makePaintTool(spec: PaintSpec): Tool {
         redraw(ed);
         return;
       }
+      if (altSamples && p.alt) {
+        sampling = true;
+        void altEyedropper.down(ed, p);
+        return;
+      }
       if (inQuickMask()) {
         qm = [{ x: p.x, y: p.y }];
         redraw(ed);
         return;
       }
-      const prev = lastEnd[spec.id];
+      const prev = lastEnd[endKey(ed)];
       if (p.shift && prev) begin(ed, [prev, sp(p)]);
       else begin(ed, [sp(p)]);
     },
     move(ed, p, pressed) {
       trackHover(ed, p);
+      if (altSamples) setCursor(p.alt || sampling ? altEyedropper.cursor : null);
+      if (sampling) {
+        if (pressed) altEyedropper.move(ed, p);
+        return;
+      }
       if (pressed && qm) {
         qm.push({ x: p.x, y: p.y });
         redraw(ed);
         return;
       }
-      if (pressed && stroke) stroke.batch.push(sp(p));
+      if (pressed && stroke) {
+        const q = axisLock(ed, stroke, p);
+        if (q) {
+          stroke.pushed = q;
+          stroke.batch.push(q);
+        }
+      }
+      if (needsSource && !stroke && sourcePoint) redraw(ed);
     },
-    up(ed) {
+    up(ed, p) {
+      if (sampling) {
+        sampling = false;
+        return altEyedropper.up(ed, p);
+      }
       if (qm) return commitQuickMask(ed);
       return end(ed);
     },
     cancel(ed) {
+      if (sampling) altEyedropper.cancel(ed);
+      sampling = false;
       if (stroke) void end(ed);
       redraw(ed);
     },
     deactivate(ed) {
       if (stroke) void end(ed);
+      if (altSamples) setCursor(null);
+    },
+    keyup(_ed: EditorStore, e: KeyboardEvent) {
+      if (altSamples && e.key === "Alt" && !sampling) setCursor(null);
+      return false;
     },
     key(ed, e) {
+      if (altSamples && e.key === "Alt" && hover.inside) {
+        setCursor(altEyedropper.cursor);
+        return false;
+      }
       if (e.code === "BracketLeft" || e.code === "BracketRight") {
         const dir = e.code === "BracketRight" ? 1 : -1;
         if (e.shiftKey) {
@@ -249,16 +323,23 @@ function makePaintTool(spec: PaintSpec): Tool {
     },
     overlay(ed, ctx) {
       if (qm) drawStrokeTint(ed, ctx, qm, sizeFor(spec.id), "rgba(255, 40, 40, 0.45)");
+      if (sampling) {
+        altEyedropper.overlay(ed, ctx);
+        return;
+      }
       if (!hover.inside) return;
+      if (altSamples && ed.cursor === altEyedropper.cursor) return;
       const size = sizeFor(spec.id);
-      drawBrushCircle(ctx, hover.vx, hover.vy, (size / 2) * ed.view.zoom, size * ed.view.zoom < 6);
       if (needsSource && sourcePoint) {
         let src: Pt = sourcePoint;
-        const off = stroke?.source ?? (toolSettings.cloneAligned ? alignedOffset : null);
+        const off = stroke?.source ?? (toolSettings.cloneAligned ? alignedOffset : { dx: sourcePoint.x - hover.x, dy: sourcePoint.y - hover.y });
         if (off) src = { x: hover.x + off.dx, y: hover.y + off.dy };
+        // Before painting, show what the brush would lay down.
+        if (!stroke && spec.engine === "clone") drawClonePreview(ed, ctx, src, { x: hover.x, y: hover.y }, size, toolSettings.brushHardness, toolSettings.brushOpacity, toolSettings.cloneSampleAll);
         const q = ed.toView(src.x, src.y);
         drawCrosshair(ctx, q.x, q.y, 8);
       }
+      drawBrushCircle(ctx, hover.vx, hover.vy, (size / 2) * ed.view.zoom, size * ed.view.zoom < 6);
     },
   };
 }

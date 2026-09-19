@@ -181,7 +181,8 @@ impl<'a> ZipReader<'a> {
         let nlen = get16(self.data, at + 26)? as usize;
         let xlen = get16(self.data, at + 28)? as usize;
         let start = at + 30 + nlen + xlen;
-        let body = self.data.get(start..start + e.compressed as usize).ok_or(Error::Corrupt("an archive entry is truncated"))?;
+        let end = start.checked_add(e.compressed as usize).ok_or(Error::Corrupt("an archive entry is truncated"))?;
+        let body = self.data.get(start..end).ok_or(Error::Corrupt("an archive entry is truncated"))?;
         let out = match e.method {
             0 => body.to_vec(),
             8 => miniz_oxide::inflate::decompress_to_vec_with_limit(body, e.size as usize).map_err(|_| Error::Corrupt("an archive entry does not inflate"))?,

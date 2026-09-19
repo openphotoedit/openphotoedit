@@ -1,14 +1,25 @@
-// Spot healing: click a blemish, or paint over a scratch. Each dab is a
-// `filter.spot-heal` at the brush radius.
+// Spot healing: click a blemish, or paint over a scratch. A click heals a
+// disc at the brush radius; a painted stroke is rasterised to a coverage
+// mask on release and healed in one `filter.spot-heal` (one undo step).
 
+import type { EditorStore } from "../lib/editor.svelte";
 import { t } from "../lib/i18n";
 import type { Tool } from "./types";
 import { setSizeFor, sizeFor } from "./settings.svelte";
 import { dist, drawBrushCircle, hover, isUnknownOp, notReady, redraw, stepSize, trackHover, type Pt, exec, reportError, requirePixels } from "./common";
-import { drawStrokeTint } from "./stroke-mask";
+import { drawStrokeTint, strokeMask } from "./stroke-mask";
 
 let points: Pt[] | null = null;
 let working = false;
+
+/** Heal the whole painted footprint in one command. */
+async function healStroke(ed: EditorStore, pts: Pt[], radius: number) {
+  const s = ed.summary;
+  if (!s) return;
+  const m = strokeMask(pts, radius * 2, s.width, s.height);
+  if (!m) return;
+  await exec(ed, { op: "filter.spot-heal", x: m.rect.x, y: m.rect.y, width: m.rect.w, height: m.rect.h, radius }, m.bytes);
+}
 
 export const spotHeal: Tool = {
   id: "spot-heal",
@@ -30,22 +41,15 @@ export const spotHeal: Tool = {
     const pts = points;
     if (!pts || working) return;
     const radius = sizeFor("spot-heal") / 2;
-    // Dabs spaced at 3/4 of the radius cover the painted path.
-    const dabs: Pt[] = [pts[0]];
-    for (const p of pts.slice(1)) if (dist(dabs[dabs.length - 1], p) >= radius * 0.75) dabs.push(p);
-    const last = pts[pts.length - 1];
-    if (dabs[dabs.length - 1] !== last && dist(dabs[dabs.length - 1], last) > radius * 0.25) dabs.push(last);
+    // A click (or a wobble smaller than half the radius) heals one spot.
+    const click = pts.every((p) => dist(p, pts[0]) < radius * 0.5);
     working = true;
     try {
-      for (const d of dabs) {
-        try {
-          await exec(ed, { op: "filter.spot-heal", x: d.x, y: d.y, radius });
-        } catch (e) {
-          if (isUnknownOp(e)) notReady(ed, t("Spot healing"));
-          else reportError(ed, e);
-          break;
-        }
-      }
+      if (click) await exec(ed, { op: "filter.spot-heal", x: pts[0].x, y: pts[0].y, radius });
+      else await healStroke(ed, pts, radius);
+    } catch (e) {
+      if (isUnknownOp(e)) notReady(ed, t("Spot healing"));
+      else reportError(ed, e);
     } finally {
       working = false;
       points = null;

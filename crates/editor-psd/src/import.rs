@@ -505,6 +505,10 @@ fn build_kind<'a>(cx: &mut Ctx<'a, '_>, rec: &LayerRecord<'a>, layer: &mut Layer
         if let Some(d) = get(b"vstk") {
             extra.kind_blocks.push((*b"vstk", d.to_vec()));
         }
+    } else if let Some((g, blend)) = get(&kinds::GRAIN_KEY).and_then(kinds::read_grain) {
+        // Our own Grain adjustment, written as a noise layer for Photoshop.
+        layer.kind = LayerKind::Adjustment(Adjustment::Grain(g));
+        layer.blend = blend_mode(cx, &blend);
     } else if let Some(res) = kinds::read_adjustment(&get) {
         match res {
             Ok(a) => layer.kind = LayerKind::Adjustment(a),
@@ -689,6 +693,7 @@ fn finish_layer<'a>(cx: &mut Ctx<'a, '_>, rec: &LayerRecord<'a>, layer: &mut Lay
     slot.blending_ranges = rec.blending_ranges.to_vec();
     for b in &rec.blocks {
         let known = HANDLED_KEYS.contains(&&b.key)
+            || b.key == kinds::GRAIN_KEY
             || EFFECT_KEYS.contains(&&b.key)
             || VECTOR_KEYS.contains(&&b.key)
             || ADJUSTMENT_KEYS.contains(&&b.key)

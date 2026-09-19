@@ -443,6 +443,16 @@ impl Plane {
         }
         let level = (step.log2().floor() as u32).min(MAX_LEVEL);
         let lscale = (1u32 << level) as f64;
+        // What is left after the mip: 1 at exact powers of two, where the
+        // mip pixels are the answer and bilinear below reads them directly.
+        // Anything in between needs a real low-pass, or detail finer than
+        // the output grid aliases into moiré (1-px stripes at step 1.3 came
+        // out as bands with a standard deviation of 73).
+        let rest = step / lscale;
+        if rest > 1.0 + 1e-9 && rest <= 4.0 {
+            self.resample_filtered(level, rest, x0, y0, step, out_w, out_h, out);
+            return;
+        }
         let (lw, lh) = self.level_dims(level);
         let size = (TILE >> level) as usize;
         let shift = TILE_SHIFT - level;
@@ -537,6 +547,199 @@ impl Plane {
                 } else {
                     let v = p00[0] as f32 * w00 + p10[0] as f32 * w10 + p01[0] as f32 * w01 + p11[0] as f32 * w11;
                     orow[o] = v / 255.0;
+                }
+            }
+        }
+    }
+
+    /// Zoomed-out resample from mip `level` with a cubic B-spline scaled to
+    /// the output grid (`rest` = step in level pixels, > 1). Separable: each
+    /// level row is gathered once (premultiplied), filtered horizontally and
+    /// kept in a small ring while the output rows that need it are summed.
+    ///
+    /// The B-spline is non-negative (no ringing, colour never exceeds alpha)
+    /// and its response above the output Nyquist frequency is small enough
+    /// that 1-px stripes average to flat grey (standard deviation 6.5 at
+    /// step 1.3, 1.4 at 1.5, ~0 at 1.9; bilinear gave 73). Between a power
+    /// of two and 1.25× it the kernel fades in from bilinear (see `blend`),
+    /// trading some moiré there for sharpness.
+    #[allow(clippy::too_many_arguments)]
+    fn resample_filtered(&self, level: u32, rest: f64, x0: f64, y0: f64, step: f64, out_w: usize, out_h: usize, out: &mut [f32]) {
+        fn bspline(u: f64) -> f32 {
+            let u = u.abs();
+            (if u < 1.0 {
+                (4.0 - 6.0 * u * u + 3.0 * u * u * u) / 6.0
+            } else if u < 2.0 {
+                let v = 2.0 - u;
+                v * v * v / 6.0
+            } else {
+                0.0
+            }) as f32
+        }
+        let ch = self.channels;
+        let lscale = (1u32 << level) as f64;
+        let (lw, lh) = self.level_dims(level);
+        let size = (TILE >> level) as usize;
+        let shift = TILE_SHIFT - level;
+        let taps = (4.0 * rest).ceil() as usize + 1;
+        // Just above a power of two the mip is nearly the right size and
+        // already box-filtered; a full B-spline there would blur it (a
+        // Refine Edge analysing at step 2.1 lost edges it needs). Fade from
+        // bilinear (a tent one level pixel wide) at rest = 1 to the full
+        // B-spline by rest = 1.25, so the result is continuous with the
+        // exact-mip path and fully filtered where moiré is strongest.
+        let blend = {
+            let t = ((rest - 1.0) / 0.25).clamp(0.0, 1.0);
+            (t * t * (3.0 - 2.0 * t)) as f32
+        };
+        // Tap start and normalised weights for output index `i` along an axis
+        // whose output origin is `o0` (document units).
+        let axis = |o0: f64, n: usize| -> (Vec<i64>, Vec<f32>) {
+            let mut starts = Vec::with_capacity(n);
+            let mut weights = vec![0f32; n * taps];
+            for i in 0..n {
+                let c = (o0 + (i as f64 + 0.5) * step) / lscale; // centre, level units
+                let k0 = (c - 0.5 - 2.0 * rest).ceil() as i64;
+                let ws = &mut weights[i * taps..(i + 1) * taps];
+                let mut sum = 0f32;
+                for (t, w) in ws.iter_mut().enumerate() {
+                    let d = k0 as f64 + t as f64 + 0.5 - c;
+                    let tent = (1.0 - d.abs()).max(0.0) as f32;
+                    *w = (1.0 - blend) * tent + blend * bspline(d / rest);
+                    sum += *w;
+                }
+                if sum > 0.0 {
+                    ws.iter_mut().for_each(|w| *w /= sum);
+                }
+                starts.push(k0);
+            }
+            (starts, weights)
+        };
+        let (xs, wx) = axis(x0, out_w);
+        let (ys, wy) = axis(y0, out_h);
+        let kmin = xs.first().copied().unwrap_or(0);
+        let span = (xs.last().copied().unwrap_or(0) + taps as i64 - kmin).max(0) as usize;
+
+        // Premultiplied fill (alpha in 0..255, colour in 0..255²).
+        let pm = |p: &[u8]| -> [f32; 4] {
+            if ch == 4 {
+                let a = p[3] as f32;
+                [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
+            } else {
+                [p[0] as f32, 0.0, 0.0, 0.0]
+            }
+        };
+        let fill_pm = pm(&self.fill[..]);
+        let mut srow = vec![0f32; span * ch];
+        // Gather level row `ly` over [kmin, kmin + span) and filter it
+        // horizontally into `dst` (out_w × ch, premultiplied).
+        let mut hfilter = |ly: i64, dst: &mut [f32]| {
+            let row_in = ly >= 0 && ly < lh as i64;
+            let ty = if row_in { (ly as u32) >> shift } else { 0 };
+            let local_y = if row_in { (ly as usize) & (size - 1) } else { 0 };
+            let mut k = 0usize;
+            while k < span {
+                let lx = kmin + k as i64;
+                if !row_in || lx < 0 || lx >= lw as i64 {
+                    srow[k * ch..(k + 1) * ch].copy_from_slice(&fill_pm[..ch]);
+                    k += 1;
+                    continue;
+                }
+                // A run inside one tile.
+                let tx = (lx as u32) >> shift;
+                let tile_end = (((tx as i64) + 1) << shift).min(lw as i64);
+                let run = ((tile_end - lx) as usize).min(span - k);
+                match self.tile(tx, ty) {
+                    None => {
+                        for px in srow[k * ch..(k + run) * ch].chunks_exact_mut(ch) {
+                            px.copy_from_slice(&fill_pm[..ch]);
+                        }
+                    }
+                    Some(t) => {
+                        let data = t.level(ch, level);
+                        let base = (local_y * size + ((lx as usize) & (size - 1))) * ch;
+                        let src = &data[base..base + run * ch];
+                        let dst = &mut srow[k * ch..(k + run) * ch];
+                        if ch == 4 {
+                            for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                                let a = s[3] as f32;
+                                d[0] = s[0] as f32 * a;
+                                d[1] = s[1] as f32 * a;
+                                d[2] = s[2] as f32 * a;
+                                d[3] = a;
+                            }
+                        } else {
+                            for (d, s) in dst.iter_mut().zip(src) {
+                                *d = *s as f32;
+                            }
+                        }
+                    }
+                }
+                k += run;
+            }
+            for i in 0..out_w {
+                let s0 = (xs[i] - kmin) as usize;
+                let w = &wx[i * taps..(i + 1) * taps];
+                if ch == 4 {
+                    let mut acc = [0f32; 4];
+                    for (t, &wt) in w.iter().enumerate() {
+                        let p = &srow[(s0 + t) * 4..(s0 + t) * 4 + 4];
+                        acc[0] += wt * p[0];
+                        acc[1] += wt * p[1];
+                        acc[2] += wt * p[2];
+                        acc[3] += wt * p[3];
+                    }
+                    dst[i * 4..i * 4 + 4].copy_from_slice(&acc);
+                } else {
+                    let mut acc = 0f32;
+                    for (t, &wt) in w.iter().enumerate() {
+                        acc += wt * srow[s0 + t];
+                    }
+                    dst[i] = acc;
+                }
+            }
+        };
+
+        // Ring of horizontally filtered rows, keyed by level row.
+        let ring_len = taps + rest.ceil() as usize + 1;
+        let row_len = out_w * ch;
+        let mut ring = vec![0f32; ring_len * row_len];
+        let mut keys = vec![i64::MIN; ring_len];
+        let mut acc = vec![0f32; row_len];
+        for j in 0..out_h {
+            acc.fill(0.0);
+            for t in 0..taps {
+                let w = wy[j * taps + t];
+                let ly = ys[j] + t as i64;
+                let slot = ly.rem_euclid(ring_len as i64) as usize;
+                let row = &mut ring[slot * row_len..(slot + 1) * row_len];
+                if keys[slot] != ly {
+                    hfilter(ly, row);
+                    keys[slot] = ly;
+                }
+                if w != 0.0 {
+                    for (a, v) in acc.iter_mut().zip(row.iter()) {
+                        *a += w * *v;
+                    }
+                }
+            }
+            let orow = &mut out[j * row_len..(j + 1) * row_len];
+            if ch == 4 {
+                for (o, a) in orow.chunks_exact_mut(4).zip(acc.chunks_exact(4)) {
+                    let alpha = a[3];
+                    if alpha > 1e-3 {
+                        let inv = 1.0 / (alpha * 255.0);
+                        o[0] = (a[0] * inv).min(1.0);
+                        o[1] = (a[1] * inv).min(1.0);
+                        o[2] = (a[2] * inv).min(1.0);
+                    } else {
+                        o[..3].fill(0.0);
+                    }
+                    o[3] = (alpha / 255.0).clamp(0.0, 1.0);
+                }
+            } else {
+                for (o, a) in orow.iter_mut().zip(acc.iter()) {
+                    *o = (a / 255.0).clamp(0.0, 1.0);
                 }
             }
         }
@@ -647,6 +850,64 @@ mod tests {
         assert!((out[0] - 1.0).abs() < 1e-3, "red kept: {:?}", &out[..4]);
         assert!(out[3] > 0.99);
         assert!(out[7] < 0.01, "right pixel transparent");
+    }
+
+    fn stripes(w: u32, h: u32) -> Plane {
+        let raw: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| if x % 2 == 0 { [0, 0, 0, 255] } else { [255; 4] })).collect();
+        Plane::from_raw(w, h, 4, &raw, [0; 4])
+    }
+
+    fn mean_sd(v: &[f64]) -> (f64, f64) {
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        (m, (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len() as f64).sqrt())
+    }
+
+    /// 1-px black/white stripes have no frequency an output grid coarser
+    /// than the source can show, so every zoom-out must read flat grey.
+    /// Before the fix steps in (1, 2) sampled level 0 bilinearly and gave a
+    /// standard deviation of 64-73 (bands of moiré). The bound of 8 (3% of
+    /// full scale, invisible as texture) leaves room for the B-spline's small
+    /// residual response above Nyquist (6.5 at step 1.3). Steps within 1.25×
+    /// above a power of two fade in from bilinear on purpose (sharpness near
+    /// exact mip sizes) and are not held to this bound.
+    #[test]
+    fn zoomed_out_stripes_do_not_alias() {
+        let p = stripes(2048, 64);
+        for step in [1.3f64, 1.5, 1.9, 2.6, 3.0, 3.9] {
+            let ow = (2048.0 / step) as usize - 4;
+            let mut out = vec![0f32; ow * 4 * 4];
+            p.resample(0.3, 16.0, step, ow, 4, &mut out);
+            let row: Vec<f64> = (2..ow - 2).map(|i| out[(ow + i) * 4] as f64 * 255.0).collect();
+            let (m, sd) = mean_sd(&row);
+            assert!(sd < 8.0, "step {step}: stripes alias, sd {sd:.1}");
+            assert!((m - 127.5).abs() < 2.0, "step {step}: mean {m:.1}");
+        }
+    }
+
+    #[test]
+    fn zoomed_out_filter_keeps_edges_and_alpha() {
+        // A hard edge shrunk by 1.5 stays within a few output pixels, and a
+        // transparent neighbour does not darken opaque red.
+        let mut p = Plane::transparent(600, 8);
+        let red: Vec<u8> = (0..300 * 8).flat_map(|_| [255, 0, 0, 255]).collect();
+        p.write(Rect::new(0, 0, 300, 8), &red);
+        let ow = 400;
+        let mut out = vec![0f32; ow * 2 * 4];
+        p.resample(0.0, 2.0, 1.5, ow, 2, &mut out);
+        let soft = (0..ow).filter(|&i| (0.05..0.95).contains(&out[i * 4 + 3])).count();
+        assert!(soft <= 4, "edge smeared over {soft} px");
+        for i in 0..ow {
+            let px = &out[i * 4..i * 4 + 4];
+            if px[3] > 0.01 {
+                assert!(px[0] > 0.999 && px[1] < 1e-3, "colour bled at {i}: {px:?}");
+            }
+        }
+        // Single-channel planes use the same path.
+        let mut m = Plane::mask(600, 8, 0);
+        m.write(Rect::new(0, 0, 300, 8), &[255; 300 * 8]);
+        let mut mo = vec![0f32; ow * 2];
+        m.resample(0.0, 2.0, 1.5, ow, 2, &mut mo);
+        assert!((mo[10] - 1.0).abs() < 1e-4 && mo[390] < 1e-4);
     }
 
     #[test]

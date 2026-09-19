@@ -3,6 +3,13 @@
   // fill; rows with visibility, thumbnails, mask thumbnails (click to target
   // the mask), clipping, groups, layer effects and smart filters; drag to
   // reorder or into groups; Shift/Cmd multi-select; double-click to rename.
+  // Photoshop's gestures: press an eye and drag across other eyes to set them
+  // all (one undo step); Alt-click an eye to show only that layer; drag
+  // several selected rows at once; Alt-drag to duplicate; drag rows onto
+  // another document's tab to copy them there; Alt-click the line between
+  // two rows to clip or release; Cmd-click a thumbnail or mask to load it as
+  // a selection (Shift adds, Alt subtracts, both intersect); the blend menu
+  // previews the mode under the pointer.
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import Lock from "@lucide/svelte/icons/lock";
@@ -24,25 +31,25 @@
   import FileImage from "@lucide/svelte/icons/file-image";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import { tick } from "svelte";
-  import { BLEND_LABELS, BLEND_MODES, type BlendMode, type LayerId } from "../../engine/types";
+  import { allLayers, BLEND_LABELS, BLEND_MODES, type BlendMode, type LayerId, type LayerInfo } from "../../engine/types";
   import { editor } from "../../lib/editor.svelte";
   import { t } from "../../lib/i18n";
   import IconButton from "../../ui/IconButton.svelte";
   import Menu from "../../ui/Menu.svelte";
   import NumberField from "../../ui/NumberField.svelte";
-  import Select from "../../ui/Select.svelte";
   import { SEP, tidy, type MenuEntry } from "../../ui/menu";
   import { modHeld } from "../../ui/platform";
   import { paintTarget, setPaintTarget } from "../../ui/paint-target.svelte";
   import { css } from "../../ui/color";
   import { tooltip } from "../../ui/tooltip";
-  import { ACTIONS } from "../actions.svelte";
+  import { ACTIONS, loadMaskSelection, oneStep, selectionMode } from "../actions.svelte";
   import { ADJUSTMENT_KINDS, kindInfo } from "../adjustments";
-  import { rafThrottle, run } from "../engine.svelte";
+  import { PreviewSession, rafThrottle, run } from "../engine.svelte";
   import { filterByOp } from "../filters";
   import * as ops from "../layer-ops";
   import { pro } from "../state.svelte";
   import { EFFECTS, type ProLayer } from "../types";
+  import BlendSelect from "./BlendSelect.svelte";
   import LayerThumb from "./LayerThumb.svelte";
   import { buildRows, isDescendant, type Row } from "./layer-rows";
 
@@ -99,11 +106,33 @@
     fillDraft = null;
   }
 
+  function blendCmd(l: ProLayer, v: string): Record<string, unknown> {
+    if (v === "pass-through") return { op: "layer.props", id: l.id, pass_through: true };
+    if (l.kind === "group") return { op: "layer.props", id: l.id, pass_through: false, blend: v as BlendMode };
+    return { op: "layer.props", id: l.id, blend: v as BlendMode };
+  }
+
+  // Hovering a mode in the open menu applies it for real and takes it back
+  // again, so History ends as it was unless a mode is chosen.
+  const blendPreview = new PreviewSession();
+
+  function previewBlend(v: string | null) {
+    const l = active;
+    if (!l || v === null) {
+      void blendPreview.cancel();
+      return;
+    }
+    blendPreview.request(v, () => blendPreview.exec(blendCmd(l, v)));
+  }
+
   async function setBlend(v: string) {
-    if (!active) return;
-    if (v === "pass-through") await ops.setProps(active.id, { pass_through: true });
-    else if (active.kind === "group") await ops.setProps(active.id, { pass_through: false, blend: v as BlendMode });
-    else await ops.setProps(active.id, { blend: v as BlendMode });
+    const l = active;
+    if (!l) return;
+    const cmd = blendCmd(l, v);
+    await blendPreview.commit(v, async () => {
+      const r = await editor.engine.exec(cmd);
+      if (r.changed) editor.dirty = true;
+    });
   }
 
   function toggleLock(key: "transparency" | "pixels" | "position" | "all") {
@@ -183,25 +212,109 @@
 
   let list: HTMLDivElement;
   let press: { id: LayerId; x: number; y: number; pointer: number } | null = null;
-  let drag = $state<{ id: LayerId; target: Row | null; where: "above" | "below" | "into" | null; y: number } | null>(null);
+  type Where = "above" | "below" | "into";
+  let drag = $state<{ id: LayerId; ids: LayerId[]; alt: boolean; target: Row | null; where: Where | null; y: number; tab: number | null } | null>(null);
+  let suppressClick = false;
+
+  /** Where a layer sits in the current summary. */
+  function slotOf(id: LayerId): { parent: LayerId | null; index: number; layer: LayerInfo } | null {
+    const go = (list: LayerInfo[], parent: LayerId | null): ReturnType<typeof slotOf> => {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].id === id) return { parent, index: i, layer: list[i] };
+        const c = list[i].children;
+        if (c) {
+          const hit = go(c, list[i].id);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+    return go(editor.summary?.layers ?? [], null);
+  }
+
+  /** The rows a drag carries: the selection (top to bottom) when the pressed row is part of it. */
+  function draggedIds(id: LayerId): LayerId[] {
+    if (!selected.has(id) || selected.size < 2) return [id];
+    const rowsById = new Map(layerRows.map((r) => [r.layer.id, r.layer]));
+    const ids = layerRows.map((r) => r.layer.id).filter((x) => selected.has(x));
+    // A layer inside a dragged group travels with the group.
+    return ids.filter((x) => !ids.some((g) => g !== x && isDescendant(rowsById.get(g)!, x)));
+  }
 
   function rowDown(e: PointerEvent, r: Row) {
     if (e.button !== 0 || r.type !== "layer") return;
     if ((e.target as HTMLElement).closest("button, input")) return;
+    if (e.altKey) {
+      const zone = clipZone(e, r);
+      if (zone) {
+        // Alt-click on the line between two rows: clip the upper one to the lower.
+        e.preventDefault();
+        suppressClick = true;
+        const l = findRowLayer(zone);
+        if (l) void ops.setProps(l.id, { clip: !l.clip });
+        return;
+      }
+    }
     press = { id: r.layer.id, x: e.clientX, y: e.clientY, pointer: e.pointerId };
   }
 
+  function findRowLayer(id: LayerId) {
+    return layerRows.find((x) => x.layer.id === id)?.layer ?? null;
+  }
+
+  /**
+   * The layer an Alt-click would clip: the bottom quarter of a row is the
+   * line below it (clip this row), the top quarter the line above it (clip
+   * the row above). Null elsewhere or with nothing to clip to.
+   */
+  function clipZone(e: { clientY: number }, r: Row): LayerId | null {
+    if (r.type !== "layer") return null;
+    const el = list.querySelector<HTMLElement>(`[data-row="${r.key}"]`);
+    if (!el) return null;
+    const b = el.getBoundingClientRect();
+    const f = (e.clientY - b.top) / b.height;
+    if (f > 0.75) return r.index > 0 ? r.layer.id : null;
+    if (f < 0.25) {
+      const above = layerRows.find((x) => x.parent === r.parent && x.index === r.index + 1);
+      return above ? above.layer.id : null;
+    }
+    return null;
+  }
+
+  let clipHover = $state<string | null>(null);
+
+  function rowHover(e: PointerEvent, r: Row) {
+    clipHover = !press && !swipe && e.altKey && clipZone(e, r) != null ? r.key : null;
+  }
+
+  function tabUnder(e: PointerEvent): number | null {
+    const el = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-doc-id]");
+    const id = el ? Number(el.dataset.docId) : NaN;
+    return Number.isFinite(id) && id !== editor.currentTab ? id : null;
+  }
+
   function listMove(e: PointerEvent) {
+    if (swipe) {
+      swipeMove(e);
+      return;
+    }
     if (!press) return;
     if (!drag) {
       if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
       list.setPointerCapture(press.pointer);
-      drag = { id: press.id, target: null, where: null, y: 0 };
+      drag = { id: press.id, ids: draggedIds(press.id), alt: e.altKey, target: null, where: null, y: 0, tab: null };
+    }
+    const alt = e.altKey;
+    const tab = tabUnder(e);
+    editor.layerDropTab = tab;
+    if (tab != null) {
+      drag = { ...drag, alt, target: null, where: null, tab };
+      return;
     }
     const els = [...list.querySelectorAll<HTMLElement>("[data-row]")];
     const lr = list.getBoundingClientRect();
     let target: Row | null = null;
-    let where: "above" | "below" | "into" | null = null;
+    let where: Where | null = null;
     let y = 0;
     for (const el of els) {
       const r = el.getBoundingClientRect();
@@ -233,36 +346,176 @@
         y = last.bottom - lr.top + list.scrollTop;
       }
     }
-    const dragged = layerRows.find((x) => x.layer.id === drag!.id)?.layer;
-    if (target && target.type === "layer" && dragged && (target.layer.id === dragged.id || isDescendant(dragged, target.layer.id))) {
-      target = null;
-      where = null;
+    if (target && target.type === "layer") {
+      const tid = target.layer.id;
+      // Nothing lands on or inside itself (a duplicate may land next to its original).
+      const bad = drag.ids.some((id) => {
+        const l = findRowLayer(id);
+        return (id === tid && (!alt || where === "into")) || (!!l && isDescendant(l, tid));
+      });
+      if (bad) {
+        target = null;
+        where = null;
+      }
     }
-    drag = { id: drag.id, target, where, y };
+    autoscroll(e);
+    drag = { ...drag, alt, target, where, y, tab: null };
+  }
+
+  /** Scroll the list while a drag or swipe hugs its top or bottom edge. */
+  function autoscroll(e: PointerEvent) {
+    const r = list.getBoundingClientRect();
+    if (e.clientY < r.top + 20) list.scrollTop -= 8;
+    else if (e.clientY > r.bottom - 20) list.scrollTop += 8;
+  }
+
+  /** The (parent, index) that puts a layer at the drop point, from the current tree. */
+  function dropSlot(target: Extract<Row, { type: "layer" }>, where: Where): { parent: LayerId | null; index: number } | null {
+    const slot = slotOf(target.layer.id);
+    if (!slot) return null;
+    const l = slot.layer;
+    if (where === "into") return { parent: l.id, index: l.children?.length ?? 0 };
+    if (where === "above") return { parent: slot.parent, index: slot.index + 1 };
+    if (l.kind === "group" && l.expanded !== false && l.children?.length) return { parent: l.id, index: l.children.length };
+    return { parent: slot.parent, index: slot.index };
   }
 
   async function listUp() {
+    if (swipe) {
+      await swipeEnd();
+      return;
+    }
     const d = drag;
     press = null;
     drag = null;
-    if (!d?.target || d.target.type !== "layer" || !d.where) return;
-    const tr = d.target;
-    let parent: LayerId | null;
-    let index: number;
-    if (d.where === "into") {
-      parent = tr.layer.id;
-      index = tr.layer.children?.length ?? 0;
-    } else if (d.where === "above") {
-      parent = tr.parent;
-      index = tr.index + 1;
-    } else if (tr.layer.kind === "group" && tr.layer.expanded !== false && tr.layer.children?.length) {
-      parent = tr.layer.id;
-      index = tr.layer.children.length;
-    } else {
-      parent = tr.parent;
-      index = tr.index;
+    editor.layerDropTab = null;
+    if (!d) return;
+    if (d.tab != null) {
+      const n = await editor.copyLayersToTab(d.tab, d.ids);
+      if (n) {
+        pro.selectedIds = [];
+        editor.toast(n === 1 ? t("Copied 1 layer to {name}", { name: editor.fileName }) : t("Copied {n} layers to {name}", { n, name: editor.fileName }), "success");
+      }
+      return;
     }
-    await run({ op: "layer.move", id: d.id, ...(parent != null ? { parent } : {}), index }, undefined, t("Move layer"));
+    if (!d.target || d.target.type !== "layer" || !d.where) return;
+    const target = d.target;
+    const where = d.where;
+    const placed: LayerId[] = [];
+    const many = d.ids.length > 1;
+    await oneStep(d.alt ? (many ? "Duplicate Layers" : "Duplicate Layer") : many ? "Move Layers" : "Move Layer", async () => {
+      // Top to bottom: the first lands at the drop point, each next one right below the previous.
+      for (const id of d.ids) {
+        let moving = id;
+        if (d.alt) {
+          const r = await run({ op: "layer.duplicate", ids: [id] }, undefined, t("Duplicate layer"));
+          if (r?.data?.id == null) return false;
+          moving = r.data.id as LayerId;
+        }
+        const prev = placed.at(-1);
+        const slot = prev == null ? dropSlot(target, where) : slotOf(prev);
+        if (!slot) return false;
+        const r = await run({ op: "layer.move", id: moving, ...(slot.parent != null ? { parent: slot.parent } : {}), index: slot.index }, undefined, t("Move layer"));
+        if (!r) return false;
+        placed.push(moving);
+      }
+    });
+    if (placed.length) pro.selectedIds = placed;
+  }
+
+  function listCancel() {
+    press = null;
+    drag = null;
+    editor.layerDropTab = null;
+    if (swipe) void swipeEnd();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Visibility: click, swipe, Alt-click to show only one layer
+
+  let swipe: { visible: boolean; done: Set<LayerId>; chain: Promise<unknown> } | null = null;
+
+  function setVisible(id: LayerId, visible: boolean) {
+    return run({ op: "layer.props", id, visible }, undefined, t("Visibility"));
+  }
+
+  function eyeDown(e: PointerEvent, l: ProLayer) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.altKey) {
+      void soloLayer(l);
+      return;
+    }
+    const visible = !l.visible;
+    // The whole swipe is one engine transaction, so it is one History step
+    // however many eyes it crosses.
+    const label = visible ? "Show Layers" : "Hide Layers";
+    swipe = {
+      visible,
+      done: new Set([l.id]),
+      chain: editor.exec({ op: "edit.begin", label }, undefined, { quiet: true }).then(() => setVisible(l.id, visible)),
+    };
+    list.setPointerCapture(e.pointerId);
+  }
+
+  function swipeMove(e: PointerEvent) {
+    const s = swipe!;
+    autoscroll(e);
+    for (const el of list.querySelectorAll<HTMLElement>("[data-layer-id]")) {
+      const r = el.getBoundingClientRect();
+      if (e.clientY < r.top || e.clientY >= r.bottom) continue;
+      const id = Number(el.dataset.layerId);
+      if (s.done.has(id)) return;
+      s.done.add(id);
+      const l = findRowLayer(id);
+      if (l && l.visible !== s.visible) s.chain = s.chain.then(() => setVisible(id, s.visible));
+      return;
+    }
+  }
+
+  async function swipeEnd() {
+    const s = swipe!;
+    swipe = null;
+    await s.chain.catch(() => undefined);
+    await editor.exec({ op: "edit.end" }, undefined, { quiet: true });
+  }
+
+  /** Keyboard activation of an eye (pointer presses go through eyeDown). */
+  function eyeKey(e: MouseEvent, l: ProLayer) {
+    if (e.detail !== 0) return;
+    if (e.altKey) void soloLayer(l);
+    else void setVisible(l.id, !l.visible);
+  }
+
+  let solo: { id: LayerId; prev: Map<LayerId, boolean> } | null = null;
+
+  /** Alt-click an eye: show only that layer; Alt-click it again to bring the others back. */
+  async function soloLayer(l: ProLayer) {
+    const all = allLayers(editor.summary?.layers ?? []);
+    const keepIds = new Set<LayerId>([l.id]);
+    // Its ancestors must show for it to show, and its contents come with it.
+    for (let p = slotOf(l.id)?.parent ?? null; p != null; p = slotOf(p)?.parent ?? null) keepIds.add(p);
+    for (const x of allLayers((l.children ?? []) as LayerInfo[])) keepIds.add(x.id);
+    const restoring = solo?.id === l.id;
+    const plan: [LayerId, boolean][] = [];
+    if (restoring) {
+      for (const x of all) {
+        const v = solo!.prev.get(x.id);
+        if (v != null && v !== x.visible) plan.push([x.id, v]);
+      }
+      solo = null;
+    } else {
+      solo = { id: l.id, prev: new Map(all.map((x) => [x.id, x.visible])) };
+      for (const x of all) {
+        const want = keepIds.has(x.id);
+        if (x.visible !== want) plan.push([x.id, want]);
+      }
+    }
+    if (!plan.length) return;
+    await oneStep(restoring ? "Show Layers" : "Show Only This Layer", async () => {
+      for (const [id, v] of plan) await setVisible(id, v);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -321,10 +574,11 @@
         {
           label: t("Paste Layer Style"),
           disabled: !copiedStyle,
-          run: async () => {
-            for (const id of pro.selection()) await run({ op: "layer.set-effects", id, effects: copiedStyle });
-            await editor.engine.exec({ op: "edit.seal" }).catch(() => null);
-          },
+          // One step however many layers are selected.
+          run: () =>
+            editor.oneStep(t("Paste Layer Style"), async () => {
+              for (const id of pro.selection()) await run({ op: "layer.set-effects", id, effects: copiedStyle });
+            }),
         },
         act("layer.style-clear"),
         SEP,
@@ -404,7 +658,7 @@
   <div class="controls">
     <div class="ops-row">
       <span class="grow">
-        <Select options={blendOptions} value={blendValue} ariaLabel={t("Blend mode")} testid="blend-mode" disabled={!active} onchange={setBlend} />
+        <BlendSelect options={blendOptions} value={blendValue} ariaLabel={t("Blend mode")} testid="blend-mode" disabled={!active} onchange={setBlend} onpreview={previewBlend} />
       </span>
       <NumberField
         label={t("Opacity")}
@@ -456,12 +710,10 @@
     tabindex="0"
     aria-label={t("Layers")}
     aria-multiselectable="true"
+    class:copying={drag?.alt}
     onpointermove={listMove}
     onpointerup={listUp}
-    onpointercancel={() => {
-      press = null;
-      drag = null;
-    }}
+    onpointercancel={listCancel}
     onkeydown={listKey}
   >
     {#each rows as r (r.key)}
@@ -474,7 +726,8 @@
           class:selected={selected.has(l.id)}
           class:active={s?.active === l.id}
           class:hidden-layer={!l.visible}
-          class:dragging={drag?.id === l.id}
+          class:dragging={!!drag && drag.tab == null && !drag.alt && drag.ids.includes(l.id)}
+          class:clip-zone={clipHover === r.key}
           class:drop-into={drag?.target?.key === r.key && drag.where === "into"}
           data-row={r.key}
           data-testid="layer-row"
@@ -488,7 +741,13 @@
           aria-expanded={l.kind === "group" ? l.expanded !== false : undefined}
           style:--depth={r.depth}
           onpointerdown={(e) => rowDown(e, r)}
+          onpointermove={(e) => rowHover(e, r)}
+          onpointerleave={() => (clipHover = null)}
           onclick={(e) => {
+            if (suppressClick) {
+              suppressClick = false;
+              return;
+            }
             if ((e.target as HTMLElement).closest("button, input")) return;
             selectRow(l.id, e);
           }}
@@ -509,7 +768,8 @@
             aria-label={l.visible ? t("Hide {name}", { name: l.name }) : t("Show {name}", { name: l.name })}
             aria-pressed={l.visible}
             data-testid="layer-visibility"
-            onclick={() => ops.setProps(l.id, { visible: !l.visible }, t("Visibility"))}
+            onpointerdown={(e) => eyeDown(e, l)}
+            onclick={(e) => eyeKey(e, l)}
           >
             {#if l.visible}<Eye size={13} />{:else}<EyeOff size={13} />{/if}
           </button>
@@ -540,7 +800,7 @@
                 aria-label={t("Target layer pixels")}
                 onclick={(e) => {
                   if (modHeld(e)) {
-                    void run({ op: "select.layer-alpha", id: l.id, mode: e.shiftKey ? "add" : "replace" });
+                    void run({ op: "select.layer-alpha", id: l.id, mode: selectionMode(e) });
                     return;
                   }
                   selectRow(l.id, e);
@@ -562,6 +822,10 @@
                 aria-label={t("Target layer mask")}
                 data-testid="mask-thumb"
                 onclick={(e) => {
+                  if (modHeld(e)) {
+                    void loadMaskSelection(l.id, selectionMode(e));
+                    return;
+                  }
                   if (e.shiftKey) {
                     void run({ op: "layer.mask-props", id: l.id, enabled: !l.mask!.enabled });
                     return;
@@ -797,6 +1061,16 @@
   }
   .row.dragging {
     opacity: 0.5;
+  }
+  .list.copying {
+    cursor: copy;
+  }
+  /* Alt over the line between two rows: Photoshop's clipping cursor. */
+  .row.clip-zone {
+    cursor:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Ccircle cx='6' cy='6' r='4' fill='none' stroke='white' stroke-width='3'/%3E%3Ccircle cx='6' cy='6' r='4' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M9 9 L15 15 M15 10 V15 H10' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M9 9 L15 15 M15 10 V15 H10' fill='none' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E")
+        6 6,
+      alias;
   }
   .row.drop-into {
     box-shadow: inset 0 0 0 1px var(--text-strong);

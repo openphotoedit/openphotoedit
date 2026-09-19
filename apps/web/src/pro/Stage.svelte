@@ -11,6 +11,13 @@
   import { paintTarget } from "../ui/paint-target.svelte";
   import { ACTIONS } from "./actions.svelte";
   import { pro } from "./state.svelte";
+  import { layerSelection } from "../tools/common";
+  import { snapConfig } from "../tools/snap";
+
+  // Tools stay shell-free: hand them the Layers panel's multi-selection (to
+  // move and transform several layers as one) and the ruler guides (to snap to).
+  layerSelection.provider = () => pro.selection();
+  snapConfig.guides = () => (pro.layout.extras && pro.layout.showGuides ? pro.guides : []);
 
   const RULER = 18;
   let area: HTMLDivElement;

@@ -1,7 +1,8 @@
 // Crop: a box over the whole canvas with eight handles, darkened outside,
 // a rule-of-thirds grid while dragging, ratio lock, rotation by dragging
 // outside the box, and a straighten line. Enter, double-click or the Apply
-// button commits; Escape resets.
+// button commits; Escape resets. Dragged edges snap to the canvas edges and
+// visible layers' edges (Control disables); Alt keeps the box symmetric.
 
 import type { EditorStore } from "../lib/editor.svelte";
 import { t } from "../lib/i18n";
@@ -26,6 +27,8 @@ import {
   type HandleId,
   type Pt,
 } from "./common";
+import { drawSnapGuides, snapActive, snapAxis, snapBox, snapTargets, snapTolerance, type Targets } from "./snap";
+import type { Rect } from "../engine/types";
 
 interface CropBox {
   cx: number;
@@ -41,7 +44,7 @@ type DragKind = "draw" | "move" | "resize" | "rotate" | "straighten";
 let box: CropBox | null = null;
 let docKey = "";
 let touched = false;
-let drag: { kind: DragKind; handle?: HandleId; orig: CropBox; start: Pt; startV: Pt; end: Pt; moved: boolean } | null = null;
+let drag: { kind: DragKind; handle?: HandleId; orig: CropBox; start: Pt; startV: Pt; end: Pt; moved: boolean; targets?: Targets; guides?: Targets | null } | null = null;
 let lastDown = 0;
 
 const RAD = Math.PI / 180;
@@ -91,6 +94,52 @@ export function cropRatio(ed: EditorStore): number | null {
       return a / b;
     }
   }
+}
+
+/**
+ * Snap the named edges of an upright crop rectangle (Compositor's CropSnap):
+ * `centre` mirrors each snap to the opposite edge (Alt, symmetric).
+ */
+export function snapCropEdges(r: Rect, sides: { w?: boolean; e?: boolean; n?: boolean; s?: boolean }, t: Targets, tol: number, centre = false): { rect: Rect; guides: Targets } {
+  let x0 = r.x;
+  let x1 = r.x + r.w;
+  let y0 = r.y;
+  let y1 = r.y + r.h;
+  const gx: number[] = [];
+  const gy: number[] = [];
+  const edge = (v: number, ts: number[], g: number[]) => {
+    const sn = snapAxis([v], ts, tol);
+    if (sn.hit) g.push(v + sn.d);
+    return sn.d;
+  };
+  if (sides.w) {
+    const d = edge(x0, t.xs, gx);
+    x0 += d;
+    if (centre) x1 -= d;
+  } else if (sides.e) {
+    const d = edge(x1, t.xs, gx);
+    x1 += d;
+    if (centre) x0 -= d;
+  }
+  if (sides.n) {
+    const d = edge(y0, t.ys, gy);
+    y0 += d;
+    if (centre) y1 -= d;
+  } else if (sides.s) {
+    const d = edge(y1, t.ys, gy);
+    y1 += d;
+    if (centre) y0 -= d;
+  }
+  return { rect: { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) }, guides: { xs: gx, ys: gy } };
+}
+
+function snapInto(ed: EditorStore, b: CropBox, sides: { w?: boolean; e?: boolean; n?: boolean; s?: boolean }, centre: boolean): CropBox {
+  const d = drag;
+  if (!d?.targets || !snapActive() || Math.abs(b.angle) > 0.01) return b;
+  const sn = snapCropEdges(localRect(b), sides, d.targets, snapTolerance(ed), centre);
+  d.guides = sn.guides;
+  const r = sn.rect;
+  return { ...b, cx: r.x + r.w / 2, cy: r.y + r.h / 2, w: Math.max(1, r.w), h: Math.max(1, r.h) };
 }
 
 function localRect(b: CropBox) {
@@ -151,27 +200,38 @@ export async function commitCrop(ed: EditorStore) {
     const out = toolSettings.cropOutW > 0 && toolSettings.cropOutH > 0;
     if (!out) return;
   }
-  let cx = b.cx;
-  let cy = b.cy;
-  if (Math.abs(b.angle) > 0.01) {
-    const r = await run(ed, { op: "image.rotate-arbitrary", degrees: -b.angle, expand: false });
-    if (!r) return;
-    const c = rotatePt({ x: cx, y: cy }, { x: s.width / 2, y: s.height / 2 }, -b.angle * RAD);
-    cx = c.x;
-    cy = c.y;
-  }
-  const w = Math.max(1, Math.round(b.w));
-  const h = Math.max(1, Math.round(b.h));
-  const x = Math.round(cx - b.w / 2);
-  const y = Math.round(cy - b.h / 2);
-  const needsCrop = x !== 0 || y !== 0 || w !== s.width || h !== s.height;
-  if (needsCrop) {
-    const r = await run(ed, { op: "image.crop", x, y, width: w, height: h, delete_cropped: toolSettings.cropDeleteCropped });
-    if (!r) return;
-  }
-  if (toolSettings.cropOutW > 0 && toolSettings.cropOutH > 0 && (toolSettings.cropOutW !== w || toolSettings.cropOutH !== h)) {
-    await run(ed, { op: "image.resize", width: Math.round(toolSettings.cropOutW), height: Math.round(toolSettings.cropOutH), resample: "bicubic" });
-  }
+  // Straighten, crop and resize are one undo step.
+  const ok = await ed.engine
+    .transaction(
+      "Crop",
+      async () => {
+        let cx = b.cx;
+        let cy = b.cy;
+        if (Math.abs(b.angle) > 0.01) {
+          const r = await run(ed, { op: "image.rotate-arbitrary", degrees: -b.angle, expand: false });
+          if (!r) throw new Error("crop failed");
+          const c = rotatePt({ x: cx, y: cy }, { x: s.width / 2, y: s.height / 2 }, -b.angle * RAD);
+          cx = c.x;
+          cy = c.y;
+        }
+        const w = Math.max(1, Math.round(b.w));
+        const h = Math.max(1, Math.round(b.h));
+        const x = Math.round(cx - b.w / 2);
+        const y = Math.round(cy - b.h / 2);
+        const needsCrop = x !== 0 || y !== 0 || w !== s.width || h !== s.height;
+        if (needsCrop) {
+          const r = await run(ed, { op: "image.crop", x, y, width: w, height: h, delete_cropped: toolSettings.cropDeleteCropped });
+          if (!r) throw new Error("crop failed");
+        }
+        if (toolSettings.cropOutW > 0 && toolSettings.cropOutH > 0 && (toolSettings.cropOutW !== w || toolSettings.cropOutH !== h)) {
+          await run(ed, { op: "image.resize", width: Math.round(toolSettings.cropOutW), height: Math.round(toolSettings.cropOutH), resample: "bicubic" });
+        }
+        return true;
+      },
+      { cancelOnError: true },
+    )
+    .catch(() => false);
+  if (!ok) return;
   box = null;
   ensure(ed);
   ed.fit();
@@ -265,7 +325,7 @@ export const crop: Tool = {
       return;
     }
     const start = { x: p.x, y: p.y };
-    const base = { kind: "move" as DragKind, orig: { ...b }, start, startV: { x: p.vx, y: p.vy }, end: start, moved: false };
+    const base = { kind: "move" as DragKind, orig: { ...b }, start, startV: { x: p.vx, y: p.vy }, end: start, moved: false, targets: snapTargets(ed, [], { centres: false }), guides: null };
     if (toolState.cropStraighten || p.mod) {
       drag = { ...base, kind: "straighten" };
       return;
@@ -289,6 +349,7 @@ export const crop: Tool = {
     d.moved = true;
     const ratio = cropRatio(ed) ?? (p.shift && d.kind !== "draw" ? d.orig.w / d.orig.h : null);
     const o = d.orig;
+    d.guides = null;
     switch (d.kind) {
       case "draw": {
         let dx = p.x - d.start.x;
@@ -301,11 +362,18 @@ export const crop: Tool = {
         }
         if (p.alt) box = { cx: d.start.x, cy: d.start.y, w: Math.abs(dx) * 2, h: Math.abs(dy) * 2, angle: 0 };
         else box = { cx: d.start.x + dx / 2, cy: d.start.y + dy / 2, w: Math.abs(dx), h: Math.abs(dy), angle: 0 };
+        // Only the edges under the pointer snap, and not with a fixed ratio.
+        if (!r) box = snapInto(ed, box, { e: dx >= 0, w: dx < 0, s: dy >= 0, n: dy < 0 }, p.alt);
         touched = true;
         break;
       }
       case "move": {
         box = { ...o, cx: o.cx + p.x - d.start.x, cy: o.cy + p.y - d.start.y };
+        if (d.targets && snapActive() && Math.abs(o.angle) < 0.01) {
+          const sn = snapBox(localRect(box), d.targets, snapTolerance(ed), { centres: false });
+          box = { ...box, cx: box.cx + sn.dx, cy: box.cy + sn.dy };
+          d.guides = sn.guides;
+        }
         break;
       }
       case "resize": {
@@ -313,6 +381,8 @@ export const crop: Tool = {
         const r = resizeBox(localRect(o), d.handle!, lp, { ratio, centre: p.alt });
         const c = toWorld(o, { x: r.x + r.w / 2, y: r.y + r.h / 2 });
         box = { cx: c.x, cy: c.y, w: Math.max(1, r.w), h: Math.max(1, r.h), angle: o.angle };
+        const hd = d.handle!;
+        if (!ratio) box = snapInto(ed, box, { w: hd.includes("w"), e: hd.includes("e"), n: hd.includes("n"), s: hd.includes("s") }, p.alt);
         touched = true;
         break;
       }
@@ -439,6 +509,7 @@ export const crop: Tool = {
       const label = drag.kind === "rotate" ? `${b.angle.toFixed(1)}°` : `${Math.round(b.w)} × ${Math.round(b.h)} px`;
       drawLabel(ctx, label, hover.vx, hover.vy);
     }
+    if (drag?.moved) drawSnapGuides(ed, ctx, drag.guides ?? null);
     ctx.restore();
   },
 };

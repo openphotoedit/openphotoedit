@@ -74,6 +74,25 @@ export class EngineClient {
     return r.exec!;
   }
 
+  /**
+   * Run several commands as one undo step (`edit.begin` … `edit.end`).
+   * `fn` sends its commands through `exec` as usual and may await their
+   * results (e.g. the id `layer.duplicate` returns). The step is recorded
+   * even if `fn` throws, keeping what succeeded; pass `{ cancelOnError: true }`
+   * to roll the whole gesture back instead.
+   */
+  async transaction<T>(label: string, fn: () => Promise<T>, opts: { cancelOnError?: boolean } = {}): Promise<T> {
+    await this.exec({ op: "edit.begin", label });
+    try {
+      const out = await fn();
+      await this.exec({ op: "edit.end" });
+      return out;
+    } catch (e) {
+      await this.exec({ op: opts.cancelOnError ? "edit.cancel" : "edit.end" }).catch(() => undefined);
+      throw e;
+    }
+  }
+
   async render(x: number, y: number, scale: number, width: number, height: number): Promise<Uint8ClampedArray> {
     const r = await this.send({ type: "render", x, y, scale, width, height }).promise;
     return new Uint8ClampedArray(r.result as ArrayBuffer);

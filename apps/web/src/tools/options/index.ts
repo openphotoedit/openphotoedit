@@ -7,6 +7,7 @@ import BrushOptions from "./BrushOptions.svelte";
 import CropOptions from "./CropOptions.svelte";
 import EyedropperOptions from "./EyedropperOptions.svelte";
 import FillOptions from "./FillOptions.svelte";
+import LiquifyOptions from "./LiquifyOptions.svelte";
 import MoveOptions from "./MoveOptions.svelte";
 import PerspectiveCropOptions from "./PerspectiveCropOptions.svelte";
 import RetouchOptions from "./RetouchOptions.svelte";
@@ -40,6 +41,7 @@ const BY_TOOL: Record<string, Component<{ tool: string }> | Component<Record<str
   "blur-brush": BrushOptions,
   "sharpen-brush": BrushOptions,
   smudge: BrushOptions,
+  liquify: LiquifyOptions,
   "spot-heal": RetouchOptions,
   remove: RetouchOptions,
   patch: RetouchOptions,

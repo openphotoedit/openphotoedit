@@ -81,14 +81,16 @@ export async function newGroup() {
   } catch {
     /* the engine wants members; make one and take it out again */
   }
-  const add = await run({ op: "layer.add-pixel", above: s.active ?? undefined });
-  const id = add?.data?.id as number | undefined;
-  if (id == null) return;
-  const g = await run({ op: "layer.group", ids: [id] });
-  if (g?.data?.id != null) {
+  // Three commands, one History step.
+  await editor.oneStep(t("New group"), async () => {
+    const add = await run({ op: "layer.add-pixel", above: s.active ?? undefined });
+    const id = add?.data?.id as number | undefined;
+    if (id == null) return false;
+    const g = await run({ op: "layer.group", ids: [id] });
+    if (g?.data?.id == null) return false;
     await run({ op: "layer.delete", ids: [id] });
     pro.selectedIds = [g.data.id as number];
-  }
+  });
 }
 
 export async function ungroup(id = editor.summary?.active) {
@@ -105,10 +107,15 @@ export async function mergeSelected() {
     await run({ op: "layer.merge-down", id: a.id }, undefined, t("Merge down"));
     return;
   }
-  // Merge Layers: group the selection, then rasterise the group into one layer.
-  const g = await run({ op: "layer.group", ids }, undefined, t("Merge layers"));
-  const gid = g?.data?.id as number | undefined;
-  if (gid != null) await run({ op: "layer.rasterize", id: gid }, undefined, t("Merge layers"));
+  // Merge Layers: group the selection, then rasterise the group into one
+  // layer, recorded as one step.
+  await editor.oneStep(t("Merge layers"), async () => {
+    const g = await run({ op: "layer.group", ids }, undefined, t("Merge layers"));
+    const gid = g?.data?.id as number | undefined;
+    if (gid == null) return false;
+    const r = await run({ op: "layer.rasterize", id: gid }, undefined, t("Merge layers"));
+    return !!r;
+  });
 }
 
 export async function setProps(id: LayerId, props: Record<string, unknown>, label?: string) {
@@ -183,11 +190,15 @@ export async function applyAdjustment(adjustment: Adjustment): Promise<boolean> 
     editor.toast(t("Select a pixel layer to apply an adjustment to."), "info");
     return false;
   }
-  const add = await run({ op: "layer.add-adjustment", adjustment, above: a.id });
-  const id = add?.data?.id as number | undefined;
-  if (id == null) return false;
-  const m = await run({ op: "layer.merge-down", id });
-  return !!m;
+  // Add the adjustment as a layer and merge it down: one step, and nothing
+  // left behind if the merge fails.
+  return editor.oneStep(t("Adjustment"), async () => {
+    const add = await run({ op: "layer.add-adjustment", adjustment, above: a.id });
+    const id = add?.data?.id as number | undefined;
+    if (id == null) return false;
+    const m = await run({ op: "layer.merge-down", id });
+    return !!m;
+  });
 }
 
 /** Photoshop's Auto Tone / Contrast / Color as Levels. */

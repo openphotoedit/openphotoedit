@@ -117,7 +117,7 @@ All take `id?` (active layer), act on the selection (feathered) or the whole lay
 | `filter.custom` | `kernel: number[] (odd square), scale, offset` |
 | `filter.apply-adjustment` | `adjustment` (destructive Image › Adjustments) |
 | `filter.content-aware-fill` | `sample?: "auto"` (fills the selection from surrounding texture) |
-| `filter.spot-heal` | `x, y, radius` |
+| `filter.spot-heal` | `x, y, radius` (a disc), or `x, y, width, height` + single-channel `bytes` of that size: heals a painted stroke mask in one pass, one undo step (every pixel with coverage > 0 is resynthesised) |
 | `filter.red-eye` | `x, y, width, height, pupil_size?, darken?` |
 | `filter.frequency-separation` | `radius` → creates "Low frequency" and "High frequency" layers above; `data.ids` |
 | `filter.vignette` | `amount (-100..100), midpoint, feather` |
@@ -171,3 +171,38 @@ Optional `resample` on layer/selection-pixels/warp/perspective-crop; `auto_scale
 ## AI (◻ ai, jobs in the worker; see `apps/web/src/lib/ai.ts`)
 
 AI features end in ordinary commands (`select.mask`, `layer.set-pixels`, `layer.import`, `layer.add-adjustment`) with `provenance: "ai:<model-id>"`, so every AI step is visible, undoable and labelled.
+
+## Documents and history helpers (✓ wasm methods on `Engine`, not commands)
+
+| method | returns |
+|---|---|
+| `new_document()` / `switch_document(id)` / `close_document(id)` / `current_document()` | open documents live side by side; one is current |
+| `documents()` | `[{id, width, height, name, current, layers}]` (`layers` = total layer count, groups' contents included) |
+| `copy_layers(from, to, ids)` | copies layers of open document `from` into open document `to` above its active layer, as **one** undo step there ("Copy Layers"). Pixels, masks, effects, adjustment/fill/smart layers and whole groups come along with fresh ids; a layer inside a listed group rides with the group. The set keeps its order and relative placement, re-centred when the canvases differ in size. A clipped layer whose base is not copied is released. The source is untouched. → `{ids, count}` (new top-level ids, bottom to top) |
+
+## Transactions and multi-layer flip (✓ core, ✓ transform)
+
+| op | params | notes |
+|---|---|---|
+| `edit.begin` | `label?` | not recorded. Every command until the matching `edit.end` becomes **one** undo step, called `label` (or the first command's label). Nests; only the outermost pair records. Commands inside may depend on earlier results (the id `layer.duplicate` returns) and may be interactive (a drag's `layer.offset`s). A failing command inside is rolled back on its own; the rest stays |
+| `edit.end` | — | → `changed` (a step was recorded; false when nothing changed inside) and `label`. A stray `end` is harmless, so call it from `finally` |
+| `edit.cancel` | — | abandons the open transaction and restores the document to how it was at `edit.begin`; nothing is recorded (Escape during an Alt-drag) |
+| `transform.flip` | `ids?` (default: active layer), `horizontal` | Flip Horizontal / Vertical of the layer selection: several layers mirror as one box about the centre of their **combined** bounds (Photoshop's behaviour), exactly (no resampling blur). Label "Flip Horizontal" / "Flip Vertical" |
+
+`edit.undo`, `edit.redo` and `edit.history-go` close an open transaction first; `doc.*` commands drop it. `EngineClient.transaction(label, fn, { cancelOnError? })` in `apps/web/src/engine/client.ts` wraps a gesture in `edit.begin` / `edit.end`.
+
+## Painting and retouching additions (✓ paint, ✓ filters; workstream H3)
+
+- `filter.spot-heal` mask form: see Filters. The Spot healing brush sends it on release with the stroke rasterised by `strokeMask`; a click still sends the disc form.
+- `paint.stroke` takes `smooth?: bool = true`: the path runs through a centripetal Catmull–Rom curve of the points instead of straight chords. The newest piece is provisional (drawn with an extrapolated end, redrawn when the next segment arrives), so results do not depend on how the path is split into segments. Smudge always uses chords.
+- `paint.stroke` `tool: blur|sharpen` now mix toward the snapshot blurred once per stroke (blur σ = clamp(size/10, 1.5, 30); sharpen unsharp-masks at σ 1 × 1.5) through the stroke's coverage, capped by `strength` × `brush.opacity`. The same path in any number of segments paints identical pixels.
+- A hard, round, fixed-size tip at full flow (`hardness ≥ 0.99`, `roundness = 1`, no `pressure_size`, `flow = 1`) stamps capsules between dabs and combines coverage by max: an exact antialiased edge with no scallop.
+
+## Adjustment additions (✓ core, ✓ psd, ✓ filters, ✓ ai; workstream H2)
+
+- `hue-saturation` gains `bands: [[falloff_start, range_start, range_end, falloff_end]; 6]` (degrees, wrapping at 360; Reds, Yellows, Greens, Cyans, Blues, Magentas). Full strength between the range handles, a straight line to zero across each falloff. Absent (older projects, older UI) = Photoshop's defaults `[315,345,15,45] … [255,285,315,345]`. PSD `hue2`/`hue ` blocks read and write them byte for byte. Photoshop's Invert is `[re, fe, fs, rs]` (weight becomes 1 − weight), so it needs no extra field.
+- `hue-saturation` maths now follows Photoshop (fitted to its composites in `testdata/psd/psd-tools/adjustments/huesaturation_*.psd`, mean error 0.6/255 from 28): ranges first (hue shifts and lightness add up; range lightness moves channels toward the pixel's own max/min; saturation adds each range's push `α = s/(1−s)` for s > 0, `s` for s < 0, applied as `c + (c−L)·α`, capped at full saturation), then Master (hue, lightness toward white/black, saturation). Colorize lightness is the HSL `(max+min)/2`. Existing documents render differently (closer to Photoshop).
+- New kind `grain`: `{ amount (0..100, 25), size (0.5..20 doc px, 1.5), roughness (0..100, 50), seed: u32 }`. Neutral film grain fixed to document pixels, strongest in midtones. The UI gives each new layer a random seed. PSD export: Photoshop has no grain adjustment, so it is written as a canvas-sized **Linear Light** noise pixel layer (exact at mid-grey) with the parameters in a private `opGr` block; OpenPhotoEdit reads it back as the live Grain adjustment with its own blend mode. A warning says so.
+- `filter.add-noise`: Gaussian standard deviation is now ⅔ of the uniform spread (amount 10: uniform sd 7.36, Gaussian 8.50), so Gaussian reads stronger, as in Photoshop. The Add Noise dialog sends a fresh random `seed` each time it opens (kept while open); smart filters keep theirs.
+- No new ops for the eyedroppers: Hue/Saturation Sample/Add/Subtract and the targeted-adjust hand, and Levels black/gray/white points, compute parameters in the UI (`apps/web/src/pro/adjust/hue-bands.ts`, `levels-pick.ts`) and send `layer.set-adjustment` / `filter.apply-adjustment`. They sample the composite beneath an adjustment layer (viewport render with the layer preview-hidden) or, in Image › Adjustments dialogs, the image without the preview. Levels gray point: per channel `gamma = ln t_c / ln T`, `t_c` the sample's normalised channel value and `T` its Rec.601 luma in the same domain, so the cast goes and brightness stays; the master channel is left alone.
+- `editor_ai::matte::combine_with_existing(matte, existing?, selection?)`: Remove Background's final mask = `sel·(existing·matte) + (1−sel)·existing` (no mask = 255, no selection = 255). For the `ai.remove-background` job to use instead of refusing when the layer already has a mask.

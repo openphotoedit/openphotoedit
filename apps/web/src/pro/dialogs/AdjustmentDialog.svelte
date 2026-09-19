@@ -8,6 +8,7 @@
   import Dialog from "../../ui/Dialog.svelte";
   import type { HistogramData } from "../../ui/histogram";
   import AdjustmentEditor from "../adjust/AdjustmentEditor.svelte";
+  import { sampleComposite } from "../adjust/canvas-pick";
   import { defaultAdjustment, kindInfo } from "../adjustments";
   import { PreviewSession, histogram, isUnknownOp } from "../engine.svelte";
   import { applyAdjustment } from "../layer-ops";
@@ -15,7 +16,8 @@
 
   let { adjKind, initial }: { adjKind: string; initial?: Adjustment } = $props();
 
-  const init = () => structuredClone(initial ?? defaultAdjustment(adjKind));
+  // `initial` can arrive as reactive state; snapshot it before cloning.
+  const init = () => structuredClone($state.snapshot(initial) ?? defaultAdjustment(adjKind)) as Adjustment;
   let value = $state<Adjustment>(init());
   let preview = $state(true);
   let hist = $state<HistogramData | null>(null);
@@ -71,11 +73,23 @@
     pro.close();
   }
 
+  // Eyedroppers read the image without the preview, then the preview comes
+  // back with whatever the dropper set.
+  async function sampleOriginal(x: number, y: number) {
+    clearTimeout(timer);
+    await session.cancel();
+    try {
+      return await sampleComposite(x, y, 3);
+    } finally {
+      if (preview && !closing) session.request(JSON.stringify(value), apply);
+    }
+  }
+
   const label = $derived(kindInfo(adjKind)?.label ?? adjKind);
 </script>
 
 <Dialog title={adjKind === "develop" ? t("Camera Raw Filter") : label} width={adjKind === "develop" || adjKind === "curves" || adjKind === "levels" ? 360 : 330} scrim="clear" align="right" testid="adjustment-dialog" onclose={cancel} onsubmit={ok}>
-  <AdjustmentEditor {value} histogram={hist} onchange={(next) => (value = next)} />
+  <AdjustmentEditor {value} histogram={hist} onchange={(next) => (value = next)} sample={sampleOriginal} />
   {#if session.error}<p class="ops-error" role="alert">{session.error}</p>{/if}
   {#snippet footer()}
     <label class="ops-check preview"><input type="checkbox" bind:checked={preview} />{t("Preview")}</label>

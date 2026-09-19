@@ -6,9 +6,12 @@ import { paintTarget } from "../ui/paint-target.svelte";
 import { t } from "../lib/i18n";
 import type { Tool } from "./types";
 import { gradientStops, toolSettings } from "./settings.svelte";
-import { css, drawHandle, drawLabel, redraw, requirePixels, run, snap45, trackHover, type Pt } from "./common";
+import { css, drawHandle, drawLabel, redraw, requirePixels, run, setCursor, snap45, trackHover, type Pt } from "./common";
+import { altEyedropper } from "./eyedropper-alt";
 
 let drag: { from: Pt; to: Pt; moved: boolean } | null = null;
+/** Alt-click samples colour (Photoshop's temporary eyedropper). */
+let sampling = false;
 
 function previewFill(ed: EditorStore, ctx: CanvasRenderingContext2D, from: Pt, to: Pt): CanvasFillStrokeStyles["fillStyle"] | null {
   const a = ed.toView(from.x, from.y);
@@ -41,23 +44,37 @@ function previewFill(ed: EditorStore, ctx: CanvasRenderingContext2D, from: Pt, t
   return g;
 }
 
-export const gradient: Tool = {
+export const gradient: Tool & { keyup(ed: EditorStore, e: KeyboardEvent): boolean } = {
   id: "gradient",
   label: "Gradient",
   shortcut: "g",
   cursor: "crosshair",
   down(ed, p) {
+    if (p.alt) {
+      sampling = true;
+      void altEyedropper.down(ed, p);
+      return;
+    }
     if (!requirePixels(ed)) return;
     drag = { from: { x: p.x, y: p.y }, to: { x: p.x, y: p.y }, moved: false };
   },
   move(ed, p, pressed) {
     trackHover(ed, p);
+    setCursor(p.alt || sampling ? altEyedropper.cursor : null);
+    if (sampling) {
+      if (pressed) altEyedropper.move(ed, p);
+      return;
+    }
     if (!pressed || !drag) return;
     drag.to = p.shift ? snap45(drag.from, p) : { x: p.x, y: p.y };
     const a = ed.toView(drag.from.x, drag.from.y);
     if (Math.hypot(p.vx - a.x, p.vy - a.y) > 3) drag.moved = true;
   },
   async up(ed, p) {
+    if (sampling) {
+      sampling = false;
+      return altEyedropper.up(ed, p);
+    }
     const d = drag;
     drag = null;
     redraw(ed);
@@ -81,10 +98,24 @@ export const gradient: Tool = {
     redraw(ed);
   },
   cancel(ed) {
+    if (sampling) altEyedropper.cancel(ed);
+    sampling = false;
     drag = null;
     redraw(ed);
   },
+  deactivate() {
+    setCursor(null);
+  },
+  key(_ed, e) {
+    if (e.key === "Alt" && !drag) setCursor(altEyedropper.cursor);
+    return false;
+  },
+  keyup(_ed, e) {
+    if (e.key === "Alt" && !sampling) setCursor(null);
+    return false;
+  },
   overlay(ed, ctx) {
+    if (sampling) return altEyedropper.overlay(ed, ctx);
     const d = drag;
     if (!d?.moved || !ed.summary) return;
     const s = ed.summary;

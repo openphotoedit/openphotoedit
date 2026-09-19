@@ -111,13 +111,30 @@ pub fn edit_layer(doc: &mut Document, id: LayerId, scope: EditScope, f: impl FnO
             let src = ((y + ax) * ow + x + ax) * 4;
             let dst = (y * rect.w as usize + x) * 4;
             let cov = if has_sel { sel[y * rect.w as usize + x] as u32 } else { 255 };
-            for c in 0..4 {
-                let o = original[src + c] as u32;
-                let n = work[src + c] as u32;
-                out[dst + c] = ((o * (255 - cov) + n * cov + 127) / 255) as u8;
+            let (o, n) = (&original[src..src + 4], &work[src..src + 4]);
+            let px = &mut out[dst..dst + 4];
+            if cov == 255 {
+                px.copy_from_slice(n);
+            } else if cov == 0 {
+                px.copy_from_slice(o);
+            } else {
+                // Mix premultiplied: a straight mix would pull the colour
+                // that a transparent side stores (usually black) into the
+                // result, greying soft edges of blurred layers.
+                let wo = o[3] as u32 * (255 - cov);
+                let wn = n[3] as u32 * cov;
+                let wsum = wo + wn;
+                for c in 0..3 {
+                    px[c] = if wsum > 0 {
+                        ((o[c] as u32 * wo + n[c] as u32 * wn + wsum / 2) / wsum) as u8
+                    } else {
+                        ((o[c] as u32 * (255 - cov) + n[c] as u32 * cov + 127) / 255) as u8
+                    };
+                }
+                px[3] = ((wsum + 127) / 255) as u8;
             }
             if lock_alpha {
-                out[dst + 3] = original[src + 3];
+                px[3] = o[3];
             }
         }
     }
@@ -153,5 +170,115 @@ mod tests {
         let l = read_layer(&ed.doc, id, Rect::new(0, 0, 8, 1)).unwrap();
         assert_eq!(l[0], 200);
         assert_eq!(l[7 * 4], 10, "unselected pixels untouched");
+    }
+
+    /// 40×9 layer, opaque white for x < 20 and transparent beyond, with a
+    /// soft selection edge over x 16..28. Returns the editor and layer id.
+    fn soft_edge_setup(lock_alpha: bool) -> (Editor, LayerId) {
+        let (w, h) = (40usize, 9usize);
+        let px: Vec<u8> = (0..w * h).flat_map(|i| if i % w < 20 { [255u8; 4] } else { [0u8; 4] }).collect();
+        let mut ed = Editor::new(1, 1);
+        ed.exec_json(r#"{"op":"doc.open-pixels","width":40,"height":9}"#, &px).unwrap();
+        let id = ed.doc.active.unwrap();
+        ed.doc.find_mut(id).unwrap().locks.transparency = lock_alpha;
+        let row: Vec<u8> = (0..w).map(|x| if x < 16 { 255 } else if x >= 28 { 0 } else { (255 - (x - 16) * 255 / 12) as u8 }).collect();
+        let sel: Vec<u8> = (0..h).flat_map(|_| row.clone()).collect();
+        let mut plane = Plane::mask(w as u32, h as u32, 0);
+        plane.write(Rect::new(0, 0, w as i32, h as i32), &sel);
+        ed.doc.selection = Some(plane);
+        (ed, id)
+    }
+
+    /// A premultiplied horizontal box blur, the way filters blur alpha.
+    fn blur_row(buf: &mut [u8], w: usize, h: usize, r: usize) {
+        let src = buf.to_vec();
+        for y in 0..h {
+            for x in 0..w {
+                let (mut c, mut a, mut n) = ([0f32; 3], 0f32, 0f32);
+                for xx in x.saturating_sub(r)..(x + r + 1).min(w) {
+                    let p = &src[(y * w + xx) * 4..(y * w + xx) * 4 + 4];
+                    let pa = p[3] as f32;
+                    for k in 0..3 {
+                        c[k] += p[k] as f32 * pa;
+                    }
+                    a += pa;
+                    n += 1.0;
+                }
+                let d = &mut buf[(y * w + x) * 4..(y * w + x) * 4 + 4];
+                for k in 0..3 {
+                    d[k] = if a > 0.0 { (c[k] / a).round() as u8 } else { 0 };
+                }
+                d[3] = (a / n).round() as u8;
+            }
+        }
+    }
+
+    /// Gap B §3.7: blurring a white edge under a feathered selection turned
+    /// it grey (214, 147, 71 at x = 20, 22, 24) because original and result
+    /// were mixed as straight RGBA, pulling in the transparent pixels'
+    /// stored black. Mixed premultiplied, white stays white.
+    #[test]
+    fn soft_selection_does_not_grey_transparent_edges() {
+        let (mut ed, id) = soft_edge_setup(false);
+        let rect = Rect::new(0, 0, 40, 9);
+        edit_layer(&mut ed.doc, id, EditScope { rect, apron: 3 }, |b, w, h| blur_row(b, w, h, 3)).unwrap();
+        let px = read_layer(&ed.doc, id, Rect::new(0, 4, 40, 1)).unwrap();
+        for x in 0..40 {
+            let p = &px[x * 4..x * 4 + 4];
+            if p[3] > 0 {
+                assert!(p[0] >= 254 && p[1] >= 254 && p[2] >= 254, "x = {x}: grey fringe {p:?}");
+            }
+        }
+        assert!(px[20 * 4 + 3] > 0 && px[20 * 4 + 3] < 255, "the edge was actually blurred");
+    }
+
+    /// Fully selected pixels take the edit exactly, unselected pixels keep
+    /// the original exactly, with or without a transparency lock: the same
+    /// bytes the straight mix produced.
+    #[test]
+    fn full_and_zero_coverage_are_exact() {
+        for lock in [false, true] {
+            let (w, h) = (16usize, 4usize);
+            let px: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
+            let mut ed = Editor::new(1, 1);
+            ed.exec_json(r#"{"op":"doc.open-pixels","width":16,"height":4}"#, &px).unwrap();
+            let id = ed.doc.active.unwrap();
+            ed.doc.find_mut(id).unwrap().locks.transparency = lock;
+            let mut sel = Plane::mask(16, 4, 0);
+            sel.write(Rect::new(0, 0, 8, 4), &[255; 32]);
+            ed.doc.selection = Some(sel);
+            let edited: Vec<u8> = (0..w * h * 4).map(|i| (i * 91 % 241) as u8).collect();
+            let e2 = edited.clone();
+            edit_layer(&mut ed.doc, id, EditScope { rect: Rect::new(0, 0, 16, 4), apron: 0 }, move |b, _, _| b.copy_from_slice(&e2)).unwrap();
+            let got = read_layer(&ed.doc, id, Rect::new(0, 0, 16, 4)).unwrap();
+            for y in 0..h {
+                for x in 0..w {
+                    let i = (y * w + x) * 4;
+                    let mut want: [u8; 4] = if x < 8 { edited[i..i + 4].try_into().unwrap() } else { px[i..i + 4].try_into().unwrap() };
+                    if lock {
+                        want[3] = px[i + 3];
+                    }
+                    // A pixel that ends fully transparent has no colour.
+                    if want[3] != 0 || got[i + 3] != 0 {
+                        assert_eq!(&got[i..i + 4], &want, "lock {lock}, ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn soft_selection_with_locked_alpha_keeps_alpha_and_colour() {
+        let (mut ed, id) = soft_edge_setup(true);
+        let rect = Rect::new(0, 0, 40, 9);
+        edit_layer(&mut ed.doc, id, EditScope { rect, apron: 3 }, |b, w, h| blur_row(b, w, h, 3)).unwrap();
+        let px = read_layer(&ed.doc, id, Rect::new(0, 4, 40, 1)).unwrap();
+        for x in 0..40 {
+            let p = &px[x * 4..x * 4 + 4];
+            assert_eq!(p[3], if x < 20 { 255 } else { 0 }, "alpha locked at {x}");
+            if p[3] > 0 {
+                assert_eq!(&p[..3], &[255, 255, 255], "x = {x}");
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 //! `transform.*` commands. Registered with the editor by `register`.
 //!
 //! - `transform.layer` — free transform / perspective of layers
+//! - `transform.flip` — mirror layers about the centre of their combined bounds
 //! - `transform.selection-pixels` — lift, transform and drop selected pixels
 //! - `transform.warp` — 4×4 Bézier patch warp
 //! - `transform.liquify` (+ `transform.liquify-end`) — displacement brushes
@@ -53,6 +54,15 @@ enum Cmd {
         quad: Option<[Point; 4]>,
         #[serde(default)]
         resample: Resample,
+    },
+    /// Flip Horizontal / Vertical of the layer selection. Several layers
+    /// mirror as one box, about the centre of their combined bounds (as in
+    /// Photoshop), not each about its own or the active layer's centre.
+    #[serde(rename = "transform.flip")]
+    Flip {
+        #[serde(default)]
+        ids: Option<Vec<LayerId>>,
+        horizontal: bool,
     },
     #[serde(rename = "transform.selection-pixels")]
     SelectionPixels {
@@ -131,6 +141,7 @@ enum Cmd {
 
 const OPS: &[&str] = &[
     "transform.layer",
+    "transform.flip",
     "transform.selection-pixels",
     "transform.warp",
     "transform.liquify",
@@ -156,6 +167,15 @@ pub fn apply(v: Value, doc: &mut Document, _bytes: &[u8]) -> Result<Applied> {
             }
             transform_layers(doc, &ids, &geo, resample)?;
             Ok(Applied::step("Free Transform"))
+        }
+        Cmd::Flip { ids, horizontal } => {
+            let ids = match ids {
+                Some(ids) if !ids.is_empty() => ids,
+                _ => vec![target_id(doc, None)?],
+            };
+            let m = flip_matrix(union_bounds(doc, &ids)?, horizontal)?;
+            transform_layers(doc, &ids, &Geo::Affine(m), Resample::default())?;
+            Ok(Applied::step(if horizontal { "Flip Horizontal" } else { "Flip Vertical" }))
         }
         Cmd::SelectionPixels { id, matrix, quad, resample } => {
             let id = target_id(doc, id)?;
@@ -225,6 +245,20 @@ pub fn apply(v: Value, doc: &mut Document, _bytes: &[u8]) -> Result<Applied> {
 fn clip_rect(doc: &Document) -> Rect {
     let m = (doc.width.max(doc.height) as i32).saturating_mul(2);
     Rect::new(0, 0, doc.width as i32, doc.height as i32).inflate(m)
+}
+
+/// A mirror about the centre of `b`. Twice the centre is an integer, so
+/// pixel edges land on pixel edges and the flip is exact.
+fn flip_matrix(b: Rect, horizontal: bool) -> Result<Affine> {
+    if b.is_empty() {
+        return Err(EditorError::Invalid("the layers are empty".into()));
+    }
+    let (two_cx, two_cy) = ((2 * b.x + b.w) as f64, (2 * b.y + b.h) as f64);
+    Ok(if horizontal {
+        Affine { a: -1.0, b: 0.0, c: 0.0, d: 1.0, e: two_cx, f: 0.0 }
+    } else {
+        Affine { a: 1.0, b: 0.0, c: 0.0, d: -1.0, e: 0.0, f: two_cy }
+    })
 }
 
 /// The union of the layers' content bounds (masks included for layers

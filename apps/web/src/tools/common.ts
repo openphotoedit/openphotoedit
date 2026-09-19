@@ -686,3 +686,84 @@ export function stepSize(size: number, dir: 1 | -1) {
   const step = size < 10 ? 1 : size < 100 ? 10 : size < 200 ? 25 : size < 500 ? 50 : 100;
   return Math.max(1, size + dir * step);
 }
+
+// ---------------------------------------------------------------------------
+// Raw modifier state and the layer multi-selection
+
+/**
+ * Modifier keys as last seen by the canvas, including the raw Control key
+ * (`ToolPointer.mod` is Cmd on macOS). Photoshop disables snapping while
+ * Control is held on both platforms.
+ */
+export const mods = { ctrl: false, alt: false, shift: false, meta: false };
+
+/**
+ * The shell's layer multi-selection (Pro's Layers panel registers itself
+ * here). Tools read it through `selectedLayerIds`, so they never import a
+ * shell.
+ */
+export const layerSelection: { provider: (() => number[]) | null } = { provider: null };
+
+export function findLayer(ed: EditorStore, id: number): LayerInfo | null {
+  if (!ed.summary) return null;
+  return allLayers(ed.summary.layers).find((l) => l.id === id) ?? null;
+}
+
+/** Ids of `id`'s enclosing groups, innermost first. */
+export function ancestorIds(ed: EditorStore, id: number): number[] {
+  const out: number[] = [];
+  const walk = (ls: LayerInfo[], path: number[]): boolean => {
+    for (const l of ls) {
+      if (l.id === id) {
+        out.push(...[...path].reverse());
+        return true;
+      }
+      if (l.children && walk(l.children, [...path, l.id])) return true;
+    }
+    return false;
+  };
+  if (ed.summary) walk(ed.summary.layers, []);
+  return out;
+}
+
+/**
+ * The layers a move or transform acts on: the multi-selection when it
+ * includes the active layer, else the active layer alone. A layer whose
+ * group is also chosen is dropped, so it does not move twice.
+ */
+export function selectedLayerIds(ed: EditorStore): number[] {
+  const active = ed.summary?.active;
+  if (active == null) return [];
+  let ids = (layerSelection.provider?.() ?? []).filter((id) => findLayer(ed, id));
+  if (!ids.includes(active)) ids = [active];
+  return ids.filter((id) => !ancestorIds(ed, id).some((a) => ids.includes(a)));
+}
+
+/** Bounds of a layer; a group's is the union of its children's. */
+export function layerBounds(l: LayerInfo): Rect | null {
+  if (l.bounds && l.bounds.w > 0 && l.bounds.h > 0) return l.bounds;
+  if (!l.children) return null;
+  let r: Rect | null = null;
+  for (const c of l.children) {
+    const b = layerBounds(c);
+    if (b) r = r ? unionRect(r, b) : b;
+  }
+  return r;
+}
+
+export function unionRect(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+}
+
+/** The common box of several layers (Photoshop transforms them as one). */
+export function unionBounds(ed: EditorStore, ids: number[]): Rect | null {
+  let r: Rect | null = null;
+  for (const id of ids) {
+    const l = findLayer(ed, id);
+    const b = l ? layerBounds(l) : null;
+    if (b) r = r ? unionRect(r, b) : b;
+  }
+  return r;
+}

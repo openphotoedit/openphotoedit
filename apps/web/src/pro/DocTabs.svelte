@@ -1,6 +1,8 @@
 <script lang="ts">
   // Document tabs: name @ zoom (mode), a dot for unsaved changes, close on
-  // hover, and a button for a new document.
+  // hover, and a button for a new document. A tab is also a drop target for
+  // rows dragged from the Layers panel (the panel runs the drag and copies
+  // the layers; the tab only shows that it would receive them).
   import X from "@lucide/svelte/icons/x";
   import Plus from "@lucide/svelte/icons/plus";
   import { editor } from "../lib/editor.svelte";
@@ -23,7 +25,7 @@
   {#each editor.tabs as tab (tab.id)}
     {@const l = label(tab.id)}
     {@const current = tab.id === editor.currentTab}
-    <div class="tab" class:current role="presentation">
+    <div class="tab" class:current class:drop={editor.layerDropTab === tab.id} role="presentation" data-doc-id={tab.id}>
       <button
         type="button"
         role="tab"
@@ -115,6 +117,11 @@
     border-radius: 50%;
     background: var(--text-muted);
     flex: 0 0 auto;
+  }
+  .tab.drop {
+    background: var(--surface-active);
+    color: var(--text-strong);
+    box-shadow: inset 0 0 0 1px var(--text-strong);
   }
   .close,
   .new {
