@@ -8,6 +8,19 @@ import "./jobs/register";
 
 let engine: Engine | null = null;
 let baseUrl = "";
+
+// `init` downloads and compiles the wasm module, which takes seconds over a
+// real network. The handler below is async, so a command posted meanwhile
+// (the user opening a photo straight away) would otherwise run against a
+// null engine. Every message except `init` and `cancel` waits for this, and
+// they resume in the order they arrived.
+let markReady!: () => void;
+let markFailed!: (e: unknown) => void;
+const ready = new Promise<void>((resolve, reject) => {
+  markReady = resolve;
+  markFailed = reject;
+});
+ready.catch(() => undefined); // reported per message, not as an unhandled rejection
 const cancelled = new Set<number>();
 
 class Cancelled extends Error {
@@ -36,11 +49,18 @@ function asTransferable(v: unknown): { value: unknown; transfer: Transferable[] 
 self.onmessage = async (event: MessageEvent<Request>) => {
   const msg = event.data;
   try {
+    if (msg.type !== "init" && msg.type !== "cancel") await ready;
     switch (msg.type) {
       case "init": {
         baseUrl = msg.baseUrl;
-        await init();
-        engine = new Engine();
+        try {
+          await init();
+          engine = new Engine();
+        } catch (e) {
+          markFailed(e);
+          throw e;
+        }
+        markReady();
         post({ id: msg.id, ok: true, result: null, summary: summary() });
         break;
       }
