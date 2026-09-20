@@ -1,0 +1,61 @@
+/* Library-wide rules the scoped component styles share. Every value is a
+   token. Colour labels are photographers' data, drawn as 7px dots in accent
+   slots (the only way the design system lets an accent appear). */
+
+.lib-root {
+  --lib-label-1: var(--accent-5); /* red */
+  --lib-label-2: var(--accent-6); /* yellow */
+  --lib-label-3: var(--accent-1); /* green */
+  --lib-label-4: var(--accent-2); /* blue */
+  --lib-label-5: var(--accent-3); /* purple */
+  --lib-bar-h: 40px;
+  --lib-side-w: 280px;
+}
+
+.lib-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  flex: 0 0 auto;
+}
+.lib-dot[data-label="1"] { background: var(--lib-label-1); }
+.lib-dot[data-label="2"] { background: var(--lib-label-2); }
+.lib-dot[data-label="3"] { background: var(--lib-label-3); }
+.lib-dot[data-label="4"] { background: var(--lib-label-4); }
+.lib-dot[data-label="5"] { background: var(--lib-label-5); }
+
+.lib-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: var(--border-width) solid var(--border-hairline);
+  border-radius: var(--radius-xs);
+  font: var(--type-caption);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+}
+
+.lib-progress {
+  position: relative;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.lib-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--text-strong);
+  border-radius: inherit;
+  transition: width var(--duration-fast) var(--ease-standard);
+}
+
+.lib-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
