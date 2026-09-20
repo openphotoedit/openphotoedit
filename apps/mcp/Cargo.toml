@@ -1,0 +1,67 @@
+[package]
+name = "openphotoedit-mcp"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "OpenPhotoEdit's editing engine, exposed to AI agents over the Model Context Protocol."
+
+[[bin]]
+name = "openphotoedit-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The engine, natively. `crates/editor-server/src/render.rs` already proves
+# this works outside a browser: decode, `doc.open-pixels`, run JSON commands,
+# flatten. Every domain crate is registered here so that *every* op in
+# docs/commands.md is reachable, not the handful core knows on its own.
+#
+# Deliberately NOT editor-ai: our inference is onnxruntime-web in the
+# browser and there is no native runtime, so there is nothing to call.
+editor-core = { path = "../../crates/editor-core" }
+editor-filters = { path = "../../crates/editor-filters" }
+editor-paint = { path = "../../crates/editor-paint" }
+editor-select = { path = "../../crates/editor-select" }
+editor-transform = { path = "../../crates/editor-transform" }
+editor-psd = { path = "../../crates/editor-psd" }
+editor-project = { path = "../../crates/editor-project" }
+editor-raw = { path = "../../crates/editor-raw" }
+
+rmcp = { version = "3.3", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "signal", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Decoding and encoding the ordinary formats. The engine itself is pure
+# pixels; somebody has to turn a JPEG into them and back.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff", "bmp", "rayon"] }
+# EXIF for image_info. Read-only, and only a summary ever reaches the model.
+kamadak-exif = "0.6"
+# Previews are MCP image content, which is base64 on the wire.
+base64 = "0.22"
+# batch_edit takes a glob.
+glob = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Dependencies at opt-level 2 even in dev: decoding a RAW file or blurring a
+# 24 MP image under an unoptimised build turns a two-second test into a
+# two-minute one.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+codegen-units = 1
+strip = true
+
+[workspace]

@@ -68,3 +68,33 @@ cd apps/web && npx vite build              # type-free production build
 cd apps/web && npx svelte-check            # types
 node apps/web/e2e/smoke.mjs <photo> <out.png>   # needs a preview server on 5203
 ```
+
+## `apps/mcp` — the engine over the Model Context Protocol
+
+`apps/mcp` is a separate crate with its own `[workspace]` (like our sibling
+product's server) and path dependencies on the engine crates. It builds one
+binary, `openphotoedit-mcp`, which speaks MCP over stdio and drives the
+engine natively: decode, `doc.open-pixels`, JSON commands, flatten, write —
+the three steps `crates/editor-server/src/render.rs` already proves, with
+every domain crate registered so the whole of `docs/commands.md` is
+reachable.
+
+- **Paths in, paths out.** A tool result travels through the model, so no
+  tool returns image data unless `include_preview: true`, and that preview
+  is capped at 768 px on the long side.
+- **A sandbox the operator sets.** `--root` is repeatable and every path is
+  checked after `canonicalize`. A tool call cannot widen it.
+- **stdout is the protocol.** Logs go to stderr.
+- **No `editor-ai`.** Our inference is onnxruntime-web in the browser and
+  there is no native runtime, so AI tools are out of v1 by construction.
+- **The command catalogue** lives in `apps/mcp/src/catalog.rs`, because the
+  domain crates parse commands with `#[serde(tag = "op")]` enums and expose
+  no name list. A test reads the op names out of the engine's sources and
+  fails when one is missing from the catalogue: **if you add an op, add it
+  there too.**
+- **Ownership**: the `mcp` workstream owns `apps/mcp/**` except
+  `apps/mcp/ui/**`, which belongs to the viewer workstream (the MCP app
+  served at `ui://openphotoedit/viewer`, compiled in with `include_str!`).
+
+Build and test with its own target directory, as everything else does:
+`cd apps/mcp && CARGO_TARGET_DIR=../../target/mcp cargo test`.

@@ -1,0 +1,1661 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenPhotoEdit Viewer</title>
+<!--
+  OpenPhotoEdit — MCP App view.
+
+  Served by the MCP server as the resource  ui://openphotoedit/viewer
+  with mimeType  text/html;profile=mcp-app .  The host renders it in a
+  sandboxed iframe under the MCP Apps default CSP:
+
+      default-src 'none'; script-src 'self' 'unsafe-inline';
+      style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+      media-src 'self' data:; connect-src 'none';
+
+  So: one file, everything inline, no fonts, no CDN, no fetch/XHR/WebSocket,
+  no storage. Pixels arrive as data: URIs inside tool results.
+
+  Protocol: MCP Apps extension, spec 2026-01-26 (folded into MCP 2026-07-28).
+  postMessage JSON-RPC 2.0 with window.parent.
+
+    view -> host   ui/initialize, ui/notifications/initialized, tools/call,
+                   notifications/message, ui/request-display-mode,
+                   ui/update-model-context, ui/notifications/size-changed
+    host -> view   ui/notifications/tool-input, ui/notifications/tool-result,
+                   ui/notifications/tool-cancelled,
+                   ui/notifications/host-context-changed,
+                   ui/resource-teardown, ping
+
+  The structuredContent contract this view reads is written out in
+  apps/mcp/ui/NOTES.md. Verified by apps/mcp/ui/host-harness.mjs, which
+  stands up a fake host and drives every state.
+
+  Style: OpenApps design system. The token files cannot be linked from here
+  (single file, no network), so the handful of variables used below are
+  inlined verbatim from apps/web/src/vendor/tokens/css/{colors,typography,
+  spacing,radius,elevation,motion}.css and apps/web/src/styles/app.css.
+  OpenPhotoEdit holds accent slot 24, iris — see tokens/ACCENT-SLOTS.md.
+  No colour here is invented; every hex is a brand hex from colors.css and
+  every derived value uses the same color-mix() the token file uses.
+-->
+<style>
+/* ---------------------------------------------------------------- tokens */
+:root {
+  /* brand palette — verbatim from vendor/tokens/css/colors.css */
+  --white: #ffffff;
+  --black: #000000;
+  --blue: #15b9eb;
+  --green: #00c896;
+  --red: #ff4d4d;
+  --orange: #ff8c42;
+  --violet: #8c6cff;
+  --gray-050: #f8f8f7;
+  --gray-100: #f0f0ee;
+  --gray-200: #deded9;
+  --gray-300: #c1c0b8;
+  --gray-400: #989898;
+  --gray-500: #7c7c7c;
+  --gray-600: #656565;
+  --gray-800: #3d3d3d;
+  --gray-900: #282828;
+  --gray-950: #1a1a1a;
+  --white-04: rgba(255,255,255,0.04);
+  --white-10: rgba(255,255,255,0.1);
+  --white-20: rgba(255,255,255,0.2);
+  --white-50: rgba(255,255,255,0.5);
+  --white-60: rgba(255,255,255,0.6);
+  --white-70: rgba(255,255,255,0.7);
+  --black-04: rgba(0,0,0,0.04);
+  --black-10: rgba(0,0,0,0.1);
+  --black-30: rgba(0,0,0,0.3);
+  --black-50: rgba(0,0,0,0.5);
+  --color-font: #020202;
+  --color-background: #f2f2f2;
+  --color-background-alt: #111111;
+
+  /* derived ramps — same color-mix recipes as colors.css */
+  --green-50: color-mix(in oklab, var(--green) 10%, var(--white));
+  --green-400: color-mix(in oklab, var(--green) 78%, var(--white));
+  --green-600: color-mix(in oklab, var(--green) 88%, var(--black));
+  --green-700: color-mix(in oklab, var(--green) 72%, var(--black));
+  --red-100: color-mix(in oklab, var(--red) 14%, var(--white));
+  --red-600: color-mix(in oklab, var(--red) 78%, var(--black));
+  --orange-100: color-mix(in oklab, var(--orange) 16%, var(--white));
+  --orange-600: color-mix(in oklab, var(--orange) 68%, var(--black));
+  --blue-600: color-mix(in oklab, var(--blue) 74%, var(--black));
+
+  /* accent slot 24 — iris. openphotoedit's one colour. */
+  --ink: color-mix(in oklab, var(--blue) 54%, var(--black) 46%);
+  --iris: color-mix(in oklab, var(--violet) 56%, var(--ink));
+  --accent: var(--iris);
+  /* the accent is only ever a 16% tint chip or a 7px dot (design system) */
+  --accent-tint: color-mix(in oklab, var(--iris) 16%, transparent);
+
+  /* semantic aliases — layer 3 of colors.css, light scope */
+  --bg-page: var(--color-background);
+  --bg-subtle: var(--gray-050);
+  --bg-sunken: var(--gray-100);
+  --surface-card: var(--white);
+  --surface-raised: var(--white);
+  --surface-hover: var(--black-04);
+  --surface-active: var(--gray-100);
+  --text-strong: var(--color-font);
+  --text-body: var(--gray-800);
+  --text-muted: var(--gray-600);
+  --text-faint: color-mix(in oklab, var(--gray-500) 30%, var(--gray-600));
+  --border-hairline: var(--gray-200);
+  --border-strong: var(--gray-300);
+  --brand: var(--green);
+  --brand-contrast: var(--black);
+  --brand-soft: var(--green-50);
+  --text-brand: var(--green-700);
+  --success-fg: var(--green-700);
+  --danger-fg: var(--red-600);
+  --danger-bg: var(--red-100);
+  --warning-fg: var(--orange-600);
+  --warning-bg: var(--orange-100);
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--color-font);
+
+  /* the pasteboard behind the image — app.css: --ops-pasteboard: --bg-sunken */
+  --pasteboard: var(--gray-200);
+  --checker-a: var(--white);
+  --checker-b: var(--gray-100);
+  --rule: var(--black-30);
+
+  /* typography.css */
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-2xs: 11px; --text-xs: 12px; --text-sm: 13px; --text-base: 15px;
+  --text-lg: 20px;
+  --weight-regular: 400; --weight-medium: 500;
+  --tracking-body: -0.005em; --tracking-caps: 0.08em; --tracking-heading: -0.02em;
+  --type-body: var(--weight-regular) var(--text-base)/1.45 var(--font-sans);
+  --type-ui: var(--weight-medium) var(--text-sm)/1.3 var(--font-sans);
+  --type-caption: var(--weight-regular) var(--text-xs)/1.35 var(--font-sans);
+  --type-mono: var(--weight-regular) var(--text-sm)/1.5 var(--font-mono);
+
+  /* spacing.css / radius.css / elevation.css / motion.css */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --control-h-sm: 28px; --control-h-md: 34px;
+  --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+  --radius-full: 999px; --border-width: 1px;
+  --shadow-xs: 0 1px 1px var(--black-04);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 1px 1px var(--black-04);
+  --shadow-md: 0 2px 4px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.06);
+  --duration-fast: 120ms; --duration-base: 180ms;
+  --ease-standard: cubic-bezier(0.2,0,0,1);
+  --transition-control:
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+/* dark scope — character-identical to the .oa-dark block in colors.css,
+   applied both by the OS setting and by hostContext.theme === "dark". */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-page: var(--color-background-alt);
+    --bg-subtle: var(--gray-950);
+    --bg-sunken: var(--black);
+    --surface-card: var(--gray-950);
+    --surface-raised: var(--gray-900);
+    --surface-hover: var(--white-04);
+    --surface-active: var(--white-10);
+    --text-strong: var(--white);
+    --text-body: var(--white-70);
+    --text-muted: var(--white-60);
+    --text-faint: var(--white-50);
+    --border-hairline: var(--white-10);
+    --border-strong: var(--white-20);
+    --brand-soft: color-mix(in oklab, var(--green) 20%, transparent);
+    --text-brand: var(--green);
+    --success-fg: var(--green);
+    --danger-fg: var(--red);
+    --danger-bg: color-mix(in oklab, var(--red) 20%, transparent);
+    --warning-fg: var(--orange);
+    --warning-bg: color-mix(in oklab, var(--orange) 20%, transparent);
+    --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--green);
+    --pasteboard: #0b0b0b;
+    --checker-a: var(--gray-900);
+    --checker-b: var(--gray-950);
+    --rule: var(--white-20);
+  }
+}
+:root[data-theme="dark"] {
+  --bg-page: var(--color-background-alt);
+  --bg-subtle: var(--gray-950);
+  --bg-sunken: var(--black);
+  --surface-card: var(--gray-950);
+  --surface-raised: var(--gray-900);
+  --surface-hover: var(--white-04);
+  --surface-active: var(--white-10);
+  --text-strong: var(--white);
+  --text-body: var(--white-70);
+  --text-muted: var(--white-60);
+  --text-faint: var(--white-50);
+  --border-hairline: var(--white-10);
+  --border-strong: var(--white-20);
+  --brand-soft: color-mix(in oklab, var(--green) 20%, transparent);
+  --text-brand: var(--green);
+  --success-fg: var(--green);
+  --danger-fg: var(--red);
+  --danger-bg: color-mix(in oklab, var(--red) 20%, transparent);
+  --warning-fg: var(--orange);
+  --warning-bg: color-mix(in oklab, var(--orange) 20%, transparent);
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--green);
+  --pasteboard: #0b0b0b;
+  --checker-a: var(--gray-900);
+  --checker-b: var(--gray-950);
+  --rule: var(--white-20);
+}
+
+/* ------------------------------------------------------------------ base */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden;
+  background: var(--bg-page);
+  color: var(--text-body);
+  font: var(--type-body);
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+button { font: inherit; letter-spacing: inherit; color: inherit; }
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+svg { display: block; }
+[hidden] { display: none !important; }
+.sr { position: absolute !important; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  :root { --duration-fast: 0ms; --duration-base: 0ms; }
+}
+
+/* --------------------------------------------------------------- buttons */
+/* ported from apps/web/src/styles/components.css (.oa-btn family) */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--control-h-sm); padding: 0 10px;
+  font: var(--weight-medium) var(--text-sm)/1 var(--font-sans);
+  letter-spacing: var(--tracking-body);
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid transparent;
+  background: transparent; color: var(--text-body);
+  cursor: pointer; white-space: nowrap; user-select: none;
+  transition: var(--transition-control);
+}
+.btn:active:not(:disabled) { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn--primary { background: var(--brand); color: var(--brand-contrast); }
+.btn--primary:hover:not(:disabled) { background: var(--green-400); }
+.btn--primary:active:not(:disabled) { background: var(--green-600); }
+.btn--secondary {
+  background: var(--surface-card); color: var(--text-strong);
+  border-color: var(--border-strong); box-shadow: var(--shadow-xs);
+}
+.btn--secondary:hover:not(:disabled) { background: var(--surface-hover); }
+.btn--secondary:active:not(:disabled) { background: var(--surface-active); }
+.btn--ghost:hover:not(:disabled) { background: var(--surface-hover); }
+.btn--ghost:active:not(:disabled) { background: var(--surface-active); }
+.btn--danger { background: var(--red); color: var(--white); }
+.btn--danger:hover:not(:disabled) { background: var(--red-600); }
+.ibtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: var(--control-h-sm); height: var(--control-h-sm);
+  color: var(--text-muted); background: transparent;
+  border: var(--border-width) solid transparent; border-radius: var(--radius-sm);
+  cursor: pointer; transition: var(--transition-control);
+}
+.ibtn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-strong); }
+.ibtn:active:not(:disabled) { background: var(--surface-active); }
+.ibtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ibtn[aria-pressed="true"] {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+.seg {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  background: var(--bg-sunken); border-radius: var(--radius-md);
+}
+.seg .btn { height: 24px; padding: 0 8px; border-radius: var(--radius-sm); color: var(--text-muted); }
+.seg .btn[aria-pressed="true"] {
+  background: var(--surface-card); color: var(--text-strong); box-shadow: var(--shadow-xs);
+}
+.tag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px;
+  font: var(--weight-medium) var(--text-2xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  border-radius: var(--radius-xs);
+  border: var(--border-width) solid var(--border-strong); color: var(--text-faint);
+}
+.spin {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 1.5px solid var(--border-strong); border-top-color: var(--text-muted);
+  animation: spin 620ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2s; } }
+
+/* ---------------------------------------------------------------- layout */
+/* minmax(0, 1fr) everywhere, not 1fr: a grid track's default minimum is
+   min-content, and one long layer name or a wide action row would otherwise
+   push the whole panel past a 380px host. */
+.app {
+  display: grid; height: 100dvh; min-height: 0; overflow: hidden;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(180px, 1fr) auto minmax(0, 1fr) auto;
+  grid-template-areas: "bar" "stage" "act" "side" "status";
+}
+@media (min-width: 720px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr) 272px;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "bar bar" "stage side" "act side" "status status";
+  }
+}
+/* Nothing to list before the first result, so the side column goes away
+   instead of showing two empty boxes. */
+.app[data-state="empty"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "bar" "stage" "act" "status";
+}
+.app[data-state="empty"] .side { display: none; }
+
+/* ------------------------------------------------------------------- bar */
+.bar {
+  grid-area: bar; display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+  min-height: 44px;
+}
+.ident { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.docname {
+  font: var(--type-ui); color: var(--text-strong);
+  letter-spacing: var(--tracking-heading);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.unsaved { color: var(--warning-fg); font-size: var(--text-sm); }
+.grow { flex: 1 1 auto; min-width: 8px; }
+.zoomwrap { display: flex; align-items: center; gap: var(--space-1); }
+.zoomval {
+  min-width: 50px; height: var(--control-h-sm); padding: 0 4px;
+  text-align: center; cursor: pointer;
+  background: transparent; border: var(--border-width) solid transparent;
+  border-radius: var(--radius-sm);
+  font: var(--weight-medium) var(--text-xs)/1 var(--font-mono);
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+  transition: var(--transition-control);
+}
+.zoomval:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-strong); }
+.zoomval:disabled { cursor: default; opacity: 0.5; }
+@media (max-width: 460px) { .bar .wide-only { display: none; } }
+
+/* ----------------------------------------------------------------- stage */
+.stagewrap {
+  grid-area: stage; position: relative; min-height: 0; min-width: 0;
+  background: var(--pasteboard);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+  overflow: hidden;
+}
+.stage {
+  position: absolute; inset: 0; overflow: hidden;
+  touch-action: none; cursor: grab;
+  --tx: 0px; --ty: 0px; --pw: 0px; --ph: 0px; --split: 50%;
+}
+.stage.is-panning { cursor: grabbing; }
+.layer { position: absolute; inset: 0; }
+.layer--after { clip-path: inset(0 0 0 var(--split)); }
+.stage:not(.is-compare) .layer--before { display: none; }
+.stage:not(.is-compare) .layer--after { clip-path: none; }
+.plate {
+  position: absolute; left: 50%; top: 50%;
+  width: var(--pw); height: var(--ph);
+  transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty)));
+  background-color: var(--checker-a);
+  background-image:
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%, transparent 75%, var(--checker-b) 75%),
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%, transparent 75%, var(--checker-b) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  box-shadow: var(--shadow-md);
+}
+.plate img {
+  display: block; width: 100%; height: 100%;
+  -webkit-user-drag: none; user-select: none; pointer-events: none;
+}
+.stage.is-pixelated .plate img { image-rendering: pixelated; }
+
+.splitter {
+  position: absolute; top: 0; bottom: 0; left: var(--split);
+  width: 2px; margin-left: -1px; background: var(--white);
+  box-shadow: 0 0 0 1px var(--black-30);
+  cursor: ew-resize; touch-action: none;
+}
+.splitter::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -11px; right: -11px;
+}
+.grip {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 26px; height: 26px; border-radius: var(--radius-full);
+  background: var(--white); color: var(--gray-900);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--black-10);
+  display: grid; place-items: center;
+}
+.splitter:focus-visible .grip { box-shadow: var(--focus-ring); }
+.splabel {
+  position: absolute; bottom: var(--space-2);
+  font: var(--weight-medium) var(--text-2xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  padding: 4px 7px; border-radius: var(--radius-xs);
+  background: var(--black-50); color: var(--white);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+.splabel--b { left: var(--space-2); }
+.splabel--a { right: var(--space-2); }
+
+.hint {
+  position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 9px; border-radius: var(--radius-full);
+  background: var(--surface-card); color: var(--text-muted);
+  border: var(--border-width) solid var(--border-hairline);
+  box-shadow: var(--shadow-sm);
+  font: var(--type-caption); white-space: nowrap; max-width: calc(100% - 16px);
+}
+.hint button {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  color: var(--text-brand); font: var(--weight-medium) var(--text-xs)/1.35 var(--font-sans);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+
+/* ----------------------------------------------------------- empty state */
+.empty {
+  position: absolute; inset: 0; display: grid; place-content: center;
+  justify-items: center; gap: var(--space-3); padding: var(--space-6);
+  text-align: center; background: var(--bg-subtle);
+}
+.empty .glyph { color: var(--text-faint); opacity: 0.8; }
+.empty h2 {
+  margin: 0; font: var(--weight-medium) var(--text-base)/1.3 var(--font-sans);
+  letter-spacing: var(--tracking-heading); color: var(--text-strong);
+}
+.empty p { margin: 0; max-width: 34ch; font: var(--type-caption); color: var(--text-muted); }
+
+/* --------------------------------------------------------------- notices */
+.act { grid-area: act; background: var(--surface-card);
+       border-bottom: var(--border-width) solid var(--border-hairline); }
+.notice {
+  display: flex; align-items: flex-start; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+  font: var(--type-caption);
+}
+.notice--error { background: var(--danger-bg); color: var(--danger-fg); }
+.notice--ask { background: var(--warning-bg); color: var(--warning-fg); }
+.notice .body { flex: 1 1 auto; min-width: 0; }
+.notice strong { display: block; font-weight: var(--weight-medium); font-size: var(--text-sm); }
+.notice code {
+  font: var(--weight-regular) var(--text-2xs)/1.4 var(--font-mono);
+  word-break: break-word; opacity: 0.9;
+}
+.notice .row { display: flex; gap: var(--space-2); margin-top: var(--space-2); flex-wrap: wrap; }
+.notice .btn { height: 26px; }
+
+.actions {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); flex-wrap: wrap;
+}
+.actions .sep { width: 1px; align-self: stretch; margin: 2px 2px;
+                background: var(--border-hairline); }
+
+/* ------------------------------------------------------------------ side */
+.side {
+  grid-area: side; min-height: 0; min-width: 0; overflow: auto;
+  background: var(--bg-subtle);
+  border-left: 0; display: flex; flex-direction: column;
+}
+@media (min-width: 720px) {
+  .side { border-left: var(--border-width) solid var(--border-hairline); }
+}
+/* flex: 0 0 auto — otherwise the panels compress into each other when the
+   side column scrolls on a narrow host. */
+.panel { flex: 0 0 auto; border-bottom: var(--border-width) solid var(--border-hairline); }
+.panel > h3 {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin: 0; padding: var(--space-3) var(--space-3) var(--space-2);
+  font: var(--weight-medium) var(--text-2xs)/1.2 var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--text-faint);
+}
+.panel > h3 .count { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+.layers { display: flex; flex-direction: column; min-height: 0; }
+.layerlist { list-style: none; margin: 0; padding: 0 var(--space-2) var(--space-2); }
+.layerrow {
+  display: grid; grid-template-columns: 18px 1fr auto; align-items: center;
+  gap: var(--space-2); padding: 5px var(--space-2);
+  border-radius: var(--radius-sm); min-height: 30px;
+}
+.layerrow + .layerrow { margin-top: 1px; }
+.layerrow:hover { background: var(--surface-hover); }
+.layerrow.is-hidden { opacity: 0.45; }
+.layerrow .eye { color: var(--text-faint); }
+.layerrow .nm { min-width: 0; }
+.layerrow .nm b {
+  display: block; font: var(--weight-regular) var(--text-sm)/1.25 var(--font-sans);
+  color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.layerrow .nm span {
+  display: block; font: var(--weight-regular) var(--text-2xs)/1.3 var(--font-sans);
+  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.layerrow .op {
+  font: var(--weight-regular) var(--text-2xs)/1 var(--font-mono);
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.layerrow .mask {
+  display: inline-block; width: 6px; height: 6px; border-radius: 1px;
+  background: var(--text-faint); margin-left: 5px; vertical-align: 1px;
+}
+
+.histwrap { padding: 0 var(--space-3) var(--space-3); }
+.histbox {
+  position: relative; height: 84px; border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  border: var(--border-width) solid var(--border-hairline);
+  overflow: hidden;
+}
+.histbox canvas { width: 100%; height: 100%; display: block; }
+.histkey {
+  display: flex; gap: var(--space-3); margin-top: 6px;
+  font: var(--weight-regular) var(--text-2xs)/1 var(--font-sans); color: var(--text-faint);
+}
+.histkey i { display: inline-block; width: 8px; height: 2px; border-radius: 1px;
+             margin-right: 5px; vertical-align: 3px; }
+
+/* ---------------------------------------------------------------- status */
+.status {
+  grid-area: status; display: flex; align-items: center; flex-wrap: wrap;
+  gap: 0 var(--space-3); padding: 6px var(--space-3);
+  background: var(--surface-card);
+  border-top: var(--border-width) solid var(--border-hairline);
+  font: var(--weight-regular) var(--text-2xs)/1.6 var(--font-mono);
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+  min-height: 28px;
+}
+.status .k { color: var(--text-muted); }
+.status .sid { margin-left: auto; }
+@media (max-width: 719px) { .status .sid { margin-left: 0; } }
+</style>
+</head>
+<body>
+<div class="app" id="app" data-state="empty">
+
+  <!-- ------------------------------------------------------------- bar -->
+  <header class="bar">
+    <div class="ident">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="docname" id="docname">OpenPhotoEdit</span>
+      <span class="unsaved" id="unsaved" hidden title="Unsaved changes" aria-label="Unsaved changes">&bull;</span>
+      <span class="tag" id="fmt" hidden></span>
+    </div>
+    <span class="grow"></span>
+
+    <button class="ibtn" id="btn-compare" aria-pressed="false" disabled
+            title="Before / after split" aria-label="Before / after split">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>
+        <path d="M7 10.5 5 12l2 1.5"/><path d="m17 10.5 2 1.5-2 1.5"/>
+      </svg>
+    </button>
+
+    <div class="zoomwrap">
+      <button class="ibtn" id="btn-zout" title="Zoom out" aria-label="Zoom out" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg>
+      </button>
+      <!-- The readout is also the control: at 380px there is no room for a
+           Fit / 100% pair, so tapping the percentage toggles between them. -->
+      <button class="zoomval" id="zoomval" type="button" disabled
+              title="Toggle fit and 100%" aria-label="Toggle fit and 100%">—</button>
+      <button class="ibtn" id="btn-zin" title="Zoom in" aria-label="Zoom in" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <div class="seg wide-only">
+      <button class="btn" id="btn-fit" aria-pressed="true" disabled>Fit</button>
+      <button class="btn" id="btn-100" aria-pressed="false" disabled>100%</button>
+    </div>
+
+    <button class="ibtn" id="btn-expand" hidden title="Expand" aria-label="Expand">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- ----------------------------------------------------------- stage -->
+  <div class="stagewrap">
+    <div class="stage" id="stage" role="img" aria-label="Document preview">
+      <div class="layer layer--before"><div class="plate"><img id="img-before" alt=""></div></div>
+      <div class="layer layer--after"><div class="plate"><img id="img-after" alt=""></div></div>
+      <div class="splabel splabel--b" id="lbl-before" hidden>Before</div>
+      <div class="splabel splabel--a" id="lbl-after" hidden>After</div>
+      <div class="splitter" id="splitter" hidden role="slider" tabindex="0"
+           aria-label="Before / after split position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+        <span class="grip" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m9 7-5 5 5 5"/><path d="m15 7 5 5-5 5"/>
+          </svg>
+        </span>
+      </div>
+    </div>
+
+    <div class="hint" id="hint" hidden>
+      <span id="hint-text"></span>
+      <button type="button" id="hint-act" hidden></button>
+    </div>
+
+    <div class="empty" id="empty">
+      <span class="glyph" aria-hidden="true">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2.5"/>
+          <circle cx="8.75" cy="8.75" r="1.6"/>
+          <path d="m3.5 16.5 4.2-4.2a2 2 0 0 1 2.8 0l3.3 3.3"/>
+          <path d="m13.5 13.5 2.1-2.1a2 2 0 0 1 2.8 0l2.1 2.1"/>
+        </svg>
+      </span>
+      <h2 id="empty-title">No render yet</h2>
+      <p id="empty-body">Open a document or run an edit in the conversation. The result renders here, with its layers and histogram.</p>
+    </div>
+  </div>
+
+  <!-- --------------------------------------------------- notices + acts -->
+  <div class="act">
+    <div class="notice notice--error" id="err" hidden>
+      <span aria-hidden="true" style="margin-top:1px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.4v.1"/></svg>
+      </span>
+      <div class="body">
+        <strong id="err-title">Something went wrong</strong>
+        <code id="err-detail"></code>
+      </div>
+      <button class="ibtn" id="err-close" aria-label="Dismiss error" style="color:inherit">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="notice notice--ask" id="ask" hidden>
+      <span aria-hidden="true" style="margin-top:1px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.3 4.3 2.6 18a1.6 1.6 0 0 0 1.4 2.4h16a1.6 1.6 0 0 0 1.4-2.4L13.7 4.3a1.6 1.6 0 0 0-2.8 0Z"/>
+          <path d="M12 9.5v4"/><path d="M12 17.2v.1"/></svg>
+      </span>
+      <div class="body">
+        <strong id="ask-title">Overwrite the file?</strong>
+        <span id="ask-body"></span>
+        <div class="row">
+          <button class="btn btn--danger" id="ask-ok">Overwrite</button>
+          <button class="btn btn--secondary" id="ask-copy">Save a copy</button>
+          <button class="btn btn--ghost" id="ask-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn--secondary" id="btn-undo" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 8h11a5 5 0 0 1 0 10H8"/><path d="m7 4-4 4 4 4"/></svg>
+        Undo
+      </button>
+      <button class="btn btn--secondary" id="btn-redo" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 8H10a5 5 0 0 0 0 10h6"/><path d="m17 4 4 4-4 4"/></svg>
+        Redo
+      </button>
+      <span class="sep" aria-hidden="true"></span>
+      <button class="btn btn--secondary" id="btn-render" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 8V4h4"/><path d="M21 8V4h-4"/><path d="M3 16v4h4"/><path d="M21 16v4h-4"/></svg>
+        Sharper
+      </button>
+      <span class="grow"></span>
+      <span class="spin" id="busy" hidden role="status" aria-label="Working"></span>
+      <button class="btn btn--primary" id="btn-save" disabled>Save</button>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------ side -->
+  <aside class="side">
+    <section class="panel layers">
+      <h3>Layers <span class="count" id="layer-count"></span></h3>
+      <ul class="layerlist" id="layerlist"></ul>
+      <p id="layers-empty" style="margin:0;padding:0 var(--space-3) var(--space-4);font:var(--type-caption);color:var(--text-faint)">No layers yet.</p>
+    </section>
+    <section class="panel">
+      <h3>Histogram</h3>
+      <div class="histwrap">
+        <div class="histbox"><canvas id="hist" width="240" height="84"></canvas></div>
+        <div class="histkey" id="histkey" hidden>
+          <span><i style="background:var(--red)"></i>R</span>
+          <span><i style="background:var(--green)"></i>G</span>
+          <span><i style="background:var(--blue)"></i>B</span>
+          <span><i style="background:var(--text-faint)"></i>Luma</span>
+        </div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ---------------------------------------------------------- status -->
+  <footer class="status" id="status">
+    <span class="k" id="st-dims">—</span>
+    <span class="k" id="st-mode"></span>
+    <span class="k" id="st-size"></span>
+    <span class="sid" id="st-session"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+(function () {
+/* =====================================================================
+   1. MCP Apps transport — JSON-RPC 2.0 over postMessage with the host.
+   The iframe is sandboxed without allow-same-origin, so our origin is
+   "null" and the target origin must be "*". The host is window.parent.
+   ===================================================================== */
+
+var PROTOCOL_VERSION = "2026-01-26";
+var CLIENT_INFO = { name: "openphotoedit-viewer", version: "0.1.0" };
+var RESOURCE_URI = "ui://openphotoedit/viewer";
+
+var rpcId = 0;
+var pending = Object.create(null);
+var host = { info: null, capabilities: {}, context: {} };
+var initialized = false;
+
+function post(msg) {
+  try { window.parent.postMessage(msg, "*"); } catch (e) { /* host gone */ }
+}
+
+function notify(method, params) {
+  post({ jsonrpc: "2.0", method: method, params: params || {} });
+}
+
+function request(method, params, timeoutMs) {
+  var id = ++rpcId;
+  return new Promise(function (resolve, reject) {
+    var timer = setTimeout(function () {
+      if (pending[id]) { delete pending[id]; reject(new Error("The host did not answer " + method + " in time.")); }
+    }, timeoutMs || 30000);
+    pending[id] = { resolve: resolve, reject: reject, timer: timer, method: method };
+    post({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+  });
+}
+
+function log(level, text) {
+  notify("notifications/message", { level: level, logger: "openphotoedit.viewer", text: text });
+}
+
+window.addEventListener("message", function (ev) {
+  var m = ev.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+
+  // A response to something we asked.
+  if (m.id !== undefined && m.id !== null && (m.result !== undefined || m.error !== undefined)) {
+    var slot = pending[m.id];
+    if (!slot) return;
+    delete pending[m.id];
+    clearTimeout(slot.timer);
+    if (m.error) {
+      var err = new Error(m.error.message || "Request failed");
+      err.code = m.error.code; err.data = m.error.data; err.method = slot.method;
+      slot.reject(err);
+    } else {
+      slot.resolve(m.result);
+    }
+    return;
+  }
+
+  // A request or notification from the host.
+  switch (m.method) {
+    case "ping":
+      post({ jsonrpc: "2.0", id: m.id, result: {} });
+      break;
+    case "ui/resource-teardown":
+      post({ jsonrpc: "2.0", id: m.id, result: {} });
+      break;
+    case "ui/notifications/tool-input":
+    case "ui/notifications/tool-input-partial":
+      onToolInput((m.params && m.params.arguments) || {});
+      break;
+    case "ui/notifications/tool-result":
+      onToolResult(m.params || {});
+      break;
+    case "ui/notifications/tool-cancelled":
+      setBusy(false);
+      showError("Cancelled", (m.params && m.params.reason) || "The host cancelled the call.");
+      break;
+    case "ui/notifications/host-context-changed":
+      applyHostContext(m.params || {});
+      break;
+    default:
+      break;
+  }
+});
+
+function applyHostContext(ctx) {
+  Object.keys(ctx).forEach(function (k) { host.context[k] = ctx[k]; });
+  if (ctx.theme === "dark" || ctx.theme === "light") {
+    document.documentElement.setAttribute("data-theme", ctx.theme);
+  }
+  var modes = host.context.availableDisplayModes || [];
+  el("btn-expand").hidden = modes.indexOf("fullscreen") === -1;
+  layout();
+}
+
+function handshake() {
+  request("ui/initialize", {
+    protocolVersion: PROTOCOL_VERSION,
+    clientInfo: CLIENT_INFO,
+    appCapabilities: {
+      tools: { listChanged: false },
+      availableDisplayModes: ["inline", "fullscreen"]
+    }
+  }, 15000).then(function (res) {
+    initialized = true;
+    host.info = (res && res.hostInfo) || null;
+    host.capabilities = (res && res.hostCapabilities) || {};
+    applyHostContext((res && res.hostContext) || {});
+    notify("ui/notifications/initialized", {});
+    log("info", "viewer ready (" + RESOURCE_URI + ")");
+    reportSize();
+    document.documentElement.setAttribute("data-ready", "1");
+  }).catch(function (e) {
+    // Still usable — the view just has no host services.
+    document.documentElement.setAttribute("data-ready", "0");
+    showError("Could not reach the host", e.message);
+  });
+}
+
+var lastSize = "";
+function reportSize() {
+  var w = Math.round(document.documentElement.clientWidth);
+  var h = Math.round(document.documentElement.clientHeight);
+  var key = w + "x" + h;
+  if (key === lastSize) return;
+  lastSize = key;
+  notify("ui/notifications/size-changed", { width: w, height: h });
+}
+
+/* =====================================================================
+   2. Model — the structuredContent the openphotoedit MCP server returns.
+
+   The payload is the flat snake_case object that apps/mcp/src/server.rs
+   builds (Open::state + document_data + the preview fields). Every field
+   is optional and a payload only ever carries part of it, so each one is
+   merged in and anything absent is kept. NOTES.md in this folder writes
+   the whole contract out.
+   ===================================================================== */
+
+var state = {
+  session: null,
+  doc: null,       // { name, path, width, height, colorMode, fileBytes, format,
+                   //   family, resolution, dirty, revision }
+  preview: null,   // { uri, width, height, scale }
+  before: null,    // { uri, width, height } — the previous revision's preview
+  layers: [],      // flattened, top layer first
+  histogram: null, // { r:[256], g:[256], b:[256], luma:[256] }
+  history: { undo: 0, redo: 0, last: null },
+  warnings: [],
+  lastRevision: -1,
+  zoom: 1,
+  fitZoom: 1,
+  mode: "fit",     // "fit" | "free"
+  panX: 0, panY: 0,
+  split: 50,
+  compare: false,
+  busy: false,
+  lastTool: null
+};
+
+function el(id) { return document.getElementById(id); }
+function num(v, d) { return typeof v === "number" && isFinite(v) ? v : d; }
+function str(v, d) { return typeof v === "string" ? v : d; }
+function baseName(p) { return String(p || "").split(/[\\/]/).pop() || ""; }
+
+/** "soft-light" and "SoftLight" both read as "soft light". */
+function humanBlend(v) {
+  var s = String(v || "");
+  if (!s) return "";
+  s = s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ");
+  return s.toLowerCase();
+}
+
+/** editor-core stores layers bottom to top, as PSD does. Every editor shows
+    them the other way up, with a group's header above its children, so each
+    level is walked backwards and the parent is emitted before its own
+    (also reversed) children. */
+function flattenLayers(arr, depth, out) {
+  for (var i = arr.length - 1; i >= 0; i--) {
+    var l = arr[i];
+    if (!l || typeof l !== "object") continue;
+    out.push({
+      id: l.id,
+      name: str(l.name, "Layer"),
+      kind: str(l.kind, ""),
+      visible: l.visible !== false,
+      opacity: num(l.opacity, 1),
+      blend: humanBlend(l.blend),
+      clipped: l.clip === true || l.clipped === true,
+      hasMask: !!(l.mask && typeof l.mask === "object") || l.hasMask === true,
+      depth: depth
+    });
+    if (Array.isArray(l.children)) flattenLayers(l.children, depth + 1, out);
+  }
+}
+function readLayers(arr) {
+  var out = [];
+  flattenLayers(arr, 0, out);
+  return out;
+}
+
+/** analyze.histogram returns r/g/b/l; "luma" is accepted as a synonym of l. */
+function normHistogram(h) {
+  if (!h || typeof h !== "object") return null;
+  var src = { r: h.r, g: h.g, b: h.b, luma: h.l !== undefined ? h.l : h.luma };
+  var out = {}, any = false;
+  ["r", "g", "b", "luma"].forEach(function (k) {
+    if (Array.isArray(src[k]) && src[k].length) { out[k] = src[k]; any = true; }
+  });
+  return any ? out : null;
+}
+
+/** history.undo / history.redo are arrays of labels; their length is the depth. */
+function readHistory(h) {
+  if (!h || typeof h !== "object") return null;
+  var u = h.undo, r = h.redo;
+  var undo = Array.isArray(u) ? u.length : num(u, 0);
+  var redo = Array.isArray(r) ? r.length : num(r, 0);
+  var last = Array.isArray(u) && u.length ? String(u[u.length - 1]) : str(h.last, null);
+  return { undo: undo, redo: redo, last: last };
+}
+
+function blankDoc() {
+  return { name: "Untitled", path: "", width: 0, height: 0, colorMode: "",
+           fileBytes: 0, format: "", family: "", resolution: 0,
+           dirty: false, revision: -1 };
+}
+
+/** Apply one structuredContent payload. Fields left out are kept. */
+function applyStructured(sc) {
+  if (!sc || typeof sc !== "object") return false;
+  var touched = false;
+  var d = state.doc || blankDoc();
+
+  if (typeof sc.session_id === "string") { state.session = sc.session_id; touched = true; }
+  else if (typeof sc.sessionId === "string") { state.session = sc.sessionId; touched = true; }
+
+  // A save receipt: output_path/bytes/format and nothing to draw.
+  var isReceipt = typeof sc.output_path === "string" && sc.layers === undefined
+                  && sc.preview_data_uri === undefined;
+  if (isReceipt) {
+    d.path = sc.output_path;
+    d.name = baseName(sc.output_path) || d.name;
+    d.fileBytes = num(sc.bytes, d.fileBytes);
+    d.format = str(sc.format, d.format);
+    d.dirty = false;
+    state.doc = d;
+    touched = true;
+  } else {
+    // Geometry: flat first, then the nested `document` object document_data adds.
+    var nested = (sc.document && typeof sc.document === "object") ? sc.document : {};
+    var w = num(sc.width, num(nested.width, null));
+    var h = num(sc.height, num(nested.height, null));
+    if (w !== null && h !== null) { d.width = w; d.height = h; touched = true; }
+    if (typeof sc.path === "string") { d.path = sc.path; d.name = baseName(sc.path) || d.name; touched = true; }
+    if (typeof sc.format === "string") { d.format = sc.format; touched = true; }
+    if (typeof sc.family === "string") { d.family = sc.family; touched = true; }
+    if (sc.resolution !== undefined || nested.resolution !== undefined) {
+      d.resolution = num(sc.resolution, num(nested.resolution, d.resolution)); touched = true;
+    }
+    if (typeof sc.color_mode === "string") { d.colorMode = sc.color_mode; touched = true; }
+    else if (typeof sc.colorMode === "string") { d.colorMode = sc.colorMode; touched = true; }
+    if (sc.file_bytes !== undefined) { d.fileBytes = num(sc.file_bytes, d.fileBytes); touched = true; }
+    if (typeof sc.saved === "boolean") { d.dirty = !sc.saved; touched = true; }
+    if (sc.revision !== undefined) { d.revision = num(sc.revision, d.revision); touched = true; }
+    if (touched) state.doc = d;
+  }
+
+  // Pixels. `before` is not something the server sends: it is the preview we
+  // were showing at the previous revision, which is exactly what "before this
+  // edit" means. An explicit before_data_uri, if one ever arrives, wins.
+  var prev = state.preview;
+  var uri = str(sc.preview_data_uri, null);
+  var pmeta = (sc.preview && typeof sc.preview === "object") ? sc.preview : null;
+  if (!uri && pmeta && typeof pmeta.uri === "string") uri = pmeta.uri;   // camelCase form
+  if (uri) {
+    var next = { uri: uri, width: num(pmeta && pmeta.width, 0),
+                 height: num(pmeta && pmeta.height, 0), scale: num(pmeta && pmeta.scale, 0) };
+    if (!prev || prev.uri !== next.uri) {
+      // Only a real edit makes a "before"; a re-render at another size does not.
+      var sameShot = prev && state.lastRevision === d.revision;
+      if (prev && !sameShot) state.before = prev;
+      state.preview = next;
+      state.lastRevision = d.revision;
+      touched = true;
+    }
+  }
+  if (typeof sc.before_data_uri === "string") {
+    state.before = { uri: sc.before_data_uri, width: 0, height: 0 };
+    touched = true;
+  }
+
+  if (Array.isArray(sc.layers)) { state.layers = readLayers(sc.layers); touched = true; }
+  if (sc.histogram !== undefined) { state.histogram = normHistogram(sc.histogram); touched = true; }
+  var hist = readHistory(sc.history);
+  if (hist) { state.history = hist; touched = true; }
+  if (Array.isArray(sc.warnings)) { state.warnings = sc.warnings.map(String); touched = true; }
+
+  if (!touched) return false;
+
+  if (!state.before) state.compare = false;
+  else if (state.preview && prev && state.preview.uri !== prev.uri) state.compare = true;
+
+  render();
+  if (state.mode === "fit" || !prev) fit();
+  return true;
+}
+
+/** The host handed us the arguments of the tool call that is running. */
+function onToolInput(args) {
+  state.lastTool = args && typeof args === "object" ? args : null;
+  if (!state.preview) {
+    el("empty-title").textContent = "Rendering…";
+    el("empty-body").textContent = "The server is working on this document.";
+  }
+}
+
+/** The host handed us a CallToolResult. */
+function onToolResult(result) {
+  setBusy(false);
+  if (result && result.isError) {
+    showError("The tool reported an error", textOf(result) || "No detail was given.");
+    return;
+  }
+  var sc = result && result.structuredContent;
+  if (!applyStructured(sc)) {
+    // Not our payload — leave whatever is on screen alone.
+    log("debug", "tool-result carried no openphotoedit structuredContent");
+    return;
+  }
+  clearError();
+}
+
+function textOf(result) {
+  var c = result && result.content;
+  if (!Array.isArray(c)) return "";
+  return c.filter(function (b) { return b && b.type === "text" && typeof b.text === "string"; })
+          .map(function (b) { return b.text; }).join(" ").slice(0, 400);
+}
+
+/* =====================================================================
+   3. Calling back into the server.
+   ===================================================================== */
+
+function callTool(name, args, label) {
+  if (state.busy) return Promise.resolve(null);
+  setBusy(true);
+  clearError();
+  return request("tools/call", { name: name, arguments: args }, 60000)
+    .then(function (res) {
+      setBusy(false);
+      if (res && res.isError) {
+        showError(label + " failed", textOf(res) || "The server reported an error.");
+        return null;
+      }
+      applyStructured(res && res.structuredContent);
+      return res;
+    })
+    .catch(function (e) {
+      setBusy(false);
+      showError(label + " failed", e.message + (e.code !== undefined ? "  (code " + e.code + ")" : ""));
+      log("error", label + " failed: " + e.message);
+      return null;
+    });
+}
+
+/** Tell the model what the person just did here, so the chat stays in step. */
+function pushModelContext(summary, extra) {
+  var sc = { sessionId: state.session, action: summary };
+  if (extra) Object.keys(extra).forEach(function (k) { sc[k] = extra[k]; });
+  request("ui/update-model-context", {
+    content: [{ type: "text", text: summary }],
+    structuredContent: sc
+  }, 10000).catch(function () { /* optional capability */ });
+}
+
+/* Tool names and argument names are the server's, verbatim:
+   undo / redo        { session_id, steps? }
+   render_preview     { session_or_path, max_side?, region? }
+   save_document      { session_id, output_path, overwrite?, quality?, metadata?, close? } */
+
+function doUndo() {
+  callTool("undo", { session_id: state.session }, "Undo").then(function (r) {
+    if (r) pushModelContext("Undid the last edit in the viewer.", { historyDepth: state.history.undo });
+  });
+}
+function doRedo() {
+  callTool("redo", { session_id: state.session }, "Redo").then(function (r) {
+    if (r) pushModelContext("Redid the last undone edit in the viewer.", { historyDepth: state.history.undo });
+  });
+}
+function doRender() {
+  callTool("render_preview", {
+    session_or_path: state.session || (state.doc && state.doc.path) || "",
+    max_side: wantedPreviewSize()
+  }, "Render");
+}
+function doSave(overwrite) {
+  var out = overwrite ? state.doc.path : copyPath(state.doc.path);
+  callTool("save_document", {
+    session_id: state.session,
+    output_path: out,
+    overwrite: overwrite === true
+  }, "Save").then(function (r) {
+    if (r) pushModelContext(overwrite ? "Saved the document over " + out + "."
+                                      : "Saved the document as " + out + ".", { outputPath: out });
+  });
+}
+
+/** "…/harbour-dusk.psd" -> "…/harbour-dusk-edited.psd". save_document needs
+    an explicit output_path, and a copy must never land on the original. */
+function copyPath(p) {
+  var s = String(p || "");
+  var dot = s.lastIndexOf("."), slash = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  if (dot > slash) return s.slice(0, dot) + "-edited" + s.slice(dot);
+  return (s || "untitled") + "-edited.png";
+}
+
+/** A sharper preview is worth asking for when the plate is upscaled.
+    engine::MAX_PREVIEW_SIDE is 768, and the server clamps to it anyway. */
+var MAX_PREVIEW_SIDE = 768;
+function wantedPreviewSize() {
+  if (!state.doc) return MAX_PREVIEW_SIDE;
+  var need = Math.max(state.doc.width, state.doc.height) * state.zoom;
+  var dpr = window.devicePixelRatio || 1;
+  var want = Math.ceil(need * dpr);
+  return Math.max(256, Math.min(MAX_PREVIEW_SIDE, want || MAX_PREVIEW_SIDE));
+}
+
+/* =====================================================================
+   4. Rendering
+   ===================================================================== */
+
+function render() {
+  var ready = !!(state.doc && state.preview);
+  el("empty").hidden = ready;
+  el("app").setAttribute("data-state", ready ? "ready" : "empty");
+
+  // header
+  el("docname").textContent = ready ? (state.doc.name || "Untitled") : "OpenPhotoEdit";
+  el("unsaved").hidden = !(ready && state.doc.dirty);
+  var fmt = el("fmt");
+  if (ready && state.doc.format) { fmt.hidden = false; fmt.textContent = state.doc.format; }
+  else fmt.hidden = true;
+
+  // images
+  var after = el("img-after"), before = el("img-before");
+  if (ready) {
+    if (after.getAttribute("src") !== state.preview.uri) after.src = state.preview.uri;
+    after.alt = state.doc.name + " preview";
+  } else {
+    after.removeAttribute("src");
+  }
+  if (state.before) {
+    if (before.getAttribute("src") !== state.before.uri) before.src = state.before.uri;
+    before.alt = "Before the edit";
+  } else {
+    before.removeAttribute("src");
+  }
+
+  var stage = el("stage");
+  var canCompare = !!(ready && state.before);
+  stage.classList.toggle("is-compare", canCompare && state.compare);
+  el("splitter").hidden = !(canCompare && state.compare);
+  el("lbl-before").hidden = !(canCompare && state.compare);
+  el("lbl-after").hidden = !(canCompare && state.compare);
+  var cmp = el("btn-compare");
+  cmp.disabled = !canCompare;
+  cmp.setAttribute("aria-pressed", String(canCompare && state.compare));
+
+  // controls
+  ["btn-zin", "btn-zout", "btn-fit", "btn-100", "zoomval"].forEach(function (id) { el(id).disabled = !ready; });
+  el("btn-undo").disabled = state.busy || !ready || state.history.undo <= 0;
+  el("btn-redo").disabled = state.busy || !ready || state.history.redo <= 0;
+  el("btn-render").disabled = state.busy || !ready;
+  el("btn-save").disabled = state.busy || !ready;
+  el("btn-save").textContent = ready && !state.doc.path ? "Save…" : "Save";
+  el("btn-fit").setAttribute("aria-pressed", String(state.mode === "fit"));
+  el("btn-100").setAttribute("aria-pressed", String(state.mode !== "fit" && Math.abs(state.zoom - 1) < 0.001));
+
+  renderLayers();
+  renderHistogram();
+  renderStatus();
+  applyTransform();
+  renderHint();
+}
+
+function renderLayers() {
+  var list = el("layerlist"), n = state.layers.length;
+  el("layer-count").textContent = n ? String(n) : "";
+  el("layers-empty").hidden = n > 0;
+  list.textContent = "";
+  for (var i = 0; i < n; i++) {
+    var L = state.layers[i];
+    var li = document.createElement("li");
+    li.className = "layerrow" + (L.visible === false ? " is-hidden" : "");
+    var depth = num(L.depth, 0);
+
+    var eye = document.createElement("span");
+    eye.className = "eye";
+    eye.style.marginLeft = Math.min(depth, 4) * 8 + "px";
+    eye.innerHTML = L.visible === false
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l18 18"/><path d="M10.6 6.2A9.6 9.6 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-2.9 3.4"/><path d="M6.2 7.5C3.9 9.2 3 12 3 12s4 6 9 6a9 9 0 0 0 3.6-.8"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 12s4-6 9-6 9 6 9 6-4 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.4"/></svg>';
+    eye.setAttribute("title", L.visible === false ? "Hidden" : "Visible");
+
+    var nm = document.createElement("span");
+    nm.className = "nm";
+    var b = document.createElement("b");
+    b.textContent = typeof L.name === "string" && L.name ? L.name : "Layer";
+    var sub = document.createElement("span");
+    var bits = [];
+    if (L.kind) bits.push(String(L.kind));
+    if (L.blend && String(L.blend).toLowerCase() !== "normal") bits.push(String(L.blend));
+    if (L.clipped === true) bits.push("clipped");
+    sub.textContent = bits.join(" · ");
+    if (L.hasMask === true) {
+      var m = document.createElement("i");
+      m.className = "mask"; m.title = "Has a mask";
+      sub.appendChild(m);
+    }
+    nm.appendChild(b); nm.appendChild(sub);
+
+    var op = document.createElement("span");
+    op.className = "op";
+    var o = num(L.opacity, 1);
+    op.textContent = Math.round(Math.max(0, Math.min(1, o)) * 100) + "%";
+
+    li.appendChild(eye); li.appendChild(nm); li.appendChild(op);
+    list.appendChild(li);
+  }
+}
+
+function renderHistogram() {
+  var box = el("hist"), h = state.histogram;
+  el("histkey").hidden = !h;
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var w = Math.max(120, Math.round(box.clientWidth || 240));
+  var ht = Math.max(60, Math.round(box.clientHeight || 84));
+  if (box.width !== Math.round(w * dpr) || box.height !== Math.round(ht * dpr)) {
+    box.width = Math.round(w * dpr); box.height = Math.round(ht * dpr);
+  }
+  var g = box.getContext("2d");
+  if (!g) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, ht);
+  if (!h) return;
+
+  var css = getComputedStyle(document.documentElement);
+  var faint = css.getPropertyValue("--text-faint").trim() || "#7c7c7c";
+  var chans = [["luma", faint, true], ["r", "#ff4d4d", false], ["g", "#00c896", false], ["b", "#15b9eb", false]];
+
+  // A shared ceiling so the channels stay comparable; the top 0.2% is
+  // clipped so one spike (a flat sky, a pure-black matte) cannot flatten
+  // everything else.
+  var peak = 1;
+  chans.forEach(function (c) {
+    var a = h[c[0]]; if (!a) return;
+    var sorted = a.slice().sort(function (x, y) { return x - y; });
+    var q = sorted[Math.floor(sorted.length * 0.995)] || sorted[sorted.length - 1] || 1;
+    if (q > peak) peak = q;
+  });
+
+  function path(arr) {
+    var n = arr.length, i;
+    g.beginPath();
+    g.moveTo(0, ht);
+    for (i = 0; i < n; i++) {
+      var v = Math.min(1, (arr[i] || 0) / peak);
+      g.lineTo((i / (n - 1)) * w, ht - v * (ht - 2) - 1);
+    }
+    g.lineTo(w, ht);
+    g.closePath();
+  }
+
+  for (var i = 0; i < chans.length; i++) {
+    var key = chans[i][0], col = chans[i][1], fill = chans[i][2];
+    var arr = h[key];
+    if (!arr) continue;
+    path(arr);
+    if (fill) { g.globalAlpha = 0.34; g.fillStyle = col; g.fill(); g.globalAlpha = 1; }
+    else { g.lineWidth = 1.25; g.strokeStyle = col; g.globalAlpha = 0.95; g.stroke(); g.globalAlpha = 1; }
+  }
+}
+
+function bytes(n) {
+  if (!n) return "";
+  var u = ["B", "KB", "MB", "GB"], i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v < 10 ? v.toFixed(1) : Math.round(v)) + " " + u[i];
+}
+
+/* image_info reports colour mode as the decoder sees it ("Rgba8",
+   "rgba8 (converted on import)", "raw sensor data, developed to rgba8").
+   Tidy the common ones and pass anything else through unchanged. */
+var MODE_LABEL = {
+  rgb8: "RGB 8-bit", rgba8: "RGBA 8-bit", rgb16: "RGB 16-bit", rgba16: "RGBA 16-bit",
+  rgb32f: "RGB 32-bit float", l8: "Grayscale 8-bit", la8: "Grayscale + alpha 8-bit",
+  l16: "Grayscale 16-bit", gray8: "Grayscale 8-bit", gray16: "Grayscale 16-bit",
+  cmyk8: "CMYK 8-bit", lab8: "Lab 8-bit", indexed: "Indexed", bitmap: "Bitmap"
+};
+function modeLabel(m) {
+  var key = String(m).toLowerCase();
+  if (MODE_LABEL[key]) return MODE_LABEL[key];
+  var head = key.split(" ")[0];
+  return MODE_LABEL[head] ? MODE_LABEL[head] + key.slice(head.length) : m;
+}
+
+function renderStatus() {
+  var d = state.doc;
+  el("st-dims").textContent = d ? d.width.toLocaleString() + " × " + d.height.toLocaleString() + " px" : "—";
+  el("st-mode").textContent = d && d.colorMode ? modeLabel(d.colorMode)
+                            : (d && d.resolution ? Math.round(d.resolution) + " ppi" : "");
+  el("st-size").textContent = d ? bytes(d.fileBytes) : "";
+  el("st-session").textContent = state.session ? "session " + state.session : "";
+}
+
+function renderHint() {
+  var hint = el("hint"), t = el("hint-text"), a = el("hint-act");
+  if (!state.doc || !state.preview) { hint.hidden = true; return; }
+  var plateW = state.doc.width * state.zoom;
+  var upscaled = state.preview.width > 0 && plateW > state.preview.width * 1.35;
+  if (upscaled && !state.busy) {
+    hint.hidden = false;
+    t.textContent = "Preview is upscaled " + (plateW / state.preview.width).toFixed(1) + "×.";
+    a.hidden = false;
+    a.textContent = "Render sharper";
+  } else if (state.busy) {
+    hint.hidden = false;
+    t.textContent = "Working…";
+    a.hidden = true;
+  } else {
+    hint.hidden = true;
+  }
+}
+
+/* --- transform -------------------------------------------------------- */
+
+function stageSize() {
+  var s = el("stage");
+  return { w: s.clientWidth || 1, h: s.clientHeight || 1 };
+}
+
+function computeFit() {
+  if (!state.doc || !state.doc.width || !state.doc.height) return 1;
+  var s = stageSize(), pad = 24;
+  return Math.min((s.w - pad) / state.doc.width, (s.h - pad) / state.doc.height, 8) || 1;
+}
+
+function fit() {
+  state.fitZoom = computeFit();
+  state.zoom = state.fitZoom;
+  state.mode = "fit";
+  state.panX = 0; state.panY = 0;
+  applyTransform();
+  renderHint();
+  syncZoomUi();
+}
+
+function setZoom(z, anchorX, anchorY) {
+  var s = stageSize();
+  var min = Math.min(0.02, state.fitZoom * 0.5), max = 32;
+  var nz = Math.max(min, Math.min(max, z));
+  if (anchorX === undefined) { anchorX = s.w / 2; anchorY = s.h / 2; }
+  var cx = s.w / 2, cy = s.h / 2;
+  // screen = centre + pan + doc * zoom  =>  hold the anchor's doc point still
+  var dx = (anchorX - cx - state.panX) / state.zoom;
+  var dy = (anchorY - cy - state.panY) / state.zoom;
+  state.panX += dx * (state.zoom - nz);
+  state.panY += dy * (state.zoom - nz);
+  state.zoom = nz;
+  state.mode = "free";
+  clampPan();
+  applyTransform();
+  renderHint();
+  syncZoomUi();
+}
+
+function clampPan() {
+  if (!state.doc) return;
+  var s = stageSize();
+  var pw = state.doc.width * state.zoom, ph = state.doc.height * state.zoom;
+  var mx = Math.max(pw, s.w) / 2, my = Math.max(ph, s.h) / 2;
+  state.panX = Math.max(-mx, Math.min(mx, state.panX));
+  state.panY = Math.max(-my, Math.min(my, state.panY));
+}
+
+function applyTransform() {
+  var s = el("stage");
+  if (!state.doc) return;
+  var pw = state.doc.width * state.zoom, ph = state.doc.height * state.zoom;
+  s.style.setProperty("--pw", pw.toFixed(2) + "px");
+  s.style.setProperty("--ph", ph.toFixed(2) + "px");
+  s.style.setProperty("--tx", state.panX.toFixed(2) + "px");
+  s.style.setProperty("--ty", state.panY.toFixed(2) + "px");
+  s.style.setProperty("--split", state.split + "%");
+  // Above 4x document scale, show the pixels instead of a smeared blur.
+  s.classList.toggle("is-pixelated", state.zoom >= 4);
+  el("splitter").setAttribute("aria-valuenow", String(Math.round(state.split)));
+}
+
+function syncZoomUi() {
+  el("zoomval").textContent = state.doc ? Math.round(state.zoom * 100) + "%" : "—";
+  el("btn-fit").setAttribute("aria-pressed", String(state.mode === "fit"));
+  el("btn-100").setAttribute("aria-pressed", String(state.mode !== "fit" && Math.abs(state.zoom - 1) < 0.001));
+}
+
+function layout() {
+  if (state.mode === "fit") fit(); else { clampPan(); applyTransform(); }
+  renderHistogram();
+  reportSize();
+}
+
+/* =====================================================================
+   5. Interaction
+   ===================================================================== */
+
+var stage = el("stage");
+var pointers = Object.create(null);
+var panFrom = null, pinchFrom = null;
+
+stage.addEventListener("pointerdown", function (e) {
+  if (!state.doc) return;
+  if (e.target.closest && e.target.closest(".splitter")) return;
+  pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+  try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+  var ids = Object.keys(pointers);
+  if (ids.length === 1) {
+    panFrom = { x: e.clientX, y: e.clientY, panX: state.panX, panY: state.panY };
+    stage.classList.add("is-panning");
+  } else if (ids.length === 2) {
+    pinchFrom = pinchState(ids);
+    panFrom = null;
+  }
+});
+
+function pinchState(ids) {
+  var a = pointers[ids[0]], b = pointers[ids[1]];
+  var dx = b.x - a.x, dy = b.y - a.y;
+  var r = stage.getBoundingClientRect();
+  return {
+    dist: Math.max(1, Math.hypot(dx, dy)),
+    zoom: state.zoom,
+    cx: (a.x + b.x) / 2 - r.left,
+    cy: (a.y + b.y) / 2 - r.top
+  };
+}
+
+stage.addEventListener("pointermove", function (e) {
+  if (!pointers[e.pointerId]) return;
+  pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+  var ids = Object.keys(pointers);
+  if (ids.length >= 2 && pinchFrom) {
+    var now = pinchState(ids);
+    setZoom(pinchFrom.zoom * (now.dist / pinchFrom.dist), pinchFrom.cx, pinchFrom.cy);
+  } else if (panFrom) {
+    state.panX = panFrom.panX + (e.clientX - panFrom.x);
+    state.panY = panFrom.panY + (e.clientY - panFrom.y);
+    state.mode = "free";
+    clampPan();
+    applyTransform();
+  }
+});
+
+function endPointer(e) {
+  delete pointers[e.pointerId];
+  try { stage.releasePointerCapture(e.pointerId); } catch (_) {}
+  var ids = Object.keys(pointers);
+  if (ids.length < 2) pinchFrom = null;
+  if (ids.length === 0) { panFrom = null; stage.classList.remove("is-panning"); }
+  else if (ids.length === 1) {
+    var only = pointers[ids[0]];
+    panFrom = { x: only.x, y: only.y, panX: state.panX, panY: state.panY };
+  }
+}
+stage.addEventListener("pointerup", endPointer);
+stage.addEventListener("pointercancel", endPointer);
+
+stage.addEventListener("wheel", function (e) {
+  if (!state.doc) return;
+  e.preventDefault();
+  var r = stage.getBoundingClientRect();
+  var ax = e.clientX - r.left, ay = e.clientY - r.top;
+  var step = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  setZoom(state.zoom * Math.exp(-step / 420), ax, ay);
+}, { passive: false });
+
+stage.addEventListener("dblclick", function () { if (state.doc) fit(); });
+
+/* --- the before/after splitter ---------------------------------------- */
+
+var splitter = el("splitter");
+function splitFromClientX(x) {
+  var r = stage.getBoundingClientRect();
+  var pct = ((x - r.left) / Math.max(1, r.width)) * 100;
+  return Math.max(1, Math.min(99, pct));
+}
+splitter.addEventListener("pointerdown", function (e) {
+  e.preventDefault(); e.stopPropagation();
+  try { splitter.setPointerCapture(e.pointerId); } catch (_) {}
+  splitter.dataset.dragging = "1";
+  state.split = splitFromClientX(e.clientX);
+  applyTransform();
+});
+splitter.addEventListener("pointermove", function (e) {
+  if (splitter.dataset.dragging !== "1") return;
+  state.split = splitFromClientX(e.clientX);
+  applyTransform();
+});
+function endSplit(e) {
+  delete splitter.dataset.dragging;
+  try { splitter.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+splitter.addEventListener("pointerup", endSplit);
+splitter.addEventListener("pointercancel", endSplit);
+splitter.addEventListener("keydown", function (e) {
+  var step = e.shiftKey ? 10 : 2, moved = true;
+  if (e.key === "ArrowLeft") state.split = Math.max(1, state.split - step);
+  else if (e.key === "ArrowRight") state.split = Math.min(99, state.split + step);
+  else if (e.key === "Home") state.split = 1;
+  else if (e.key === "End") state.split = 99;
+  else moved = false;
+  if (moved) { e.preventDefault(); applyTransform(); }
+});
+
+/* --- buttons ---------------------------------------------------------- */
+
+el("btn-fit").addEventListener("click", fit);
+el("btn-100").addEventListener("click", function () { setZoom(1); });
+el("zoomval").addEventListener("click", function () {
+  if (state.mode === "fit") setZoom(1); else fit();
+});
+el("btn-zin").addEventListener("click", function () { setZoom(state.zoom * 1.4); });
+el("btn-zout").addEventListener("click", function () { setZoom(state.zoom / 1.4); });
+el("btn-compare").addEventListener("click", function () {
+  state.compare = !state.compare;
+  render();
+});
+el("hint-act").addEventListener("click", doRender);
+el("btn-render").addEventListener("click", doRender);
+el("btn-undo").addEventListener("click", doUndo);
+el("btn-redo").addEventListener("click", doRedo);
+el("btn-expand").addEventListener("click", function () {
+  var now = host.context.displayMode === "fullscreen" ? "inline" : "fullscreen";
+  request("ui/request-display-mode", { mode: now }, 10000).then(function (r) {
+    if (r && r.mode) host.context.displayMode = r.mode;
+    layout();
+  }).catch(function () { /* the host may refuse */ });
+});
+
+/* Saving over somebody's original is the one destructive thing here,
+   so it always asks first. */
+el("btn-save").addEventListener("click", function () {
+  if (!state.doc) return;
+  if (state.doc.path) {
+    el("ask-body").textContent = "This replaces " + state.doc.path
+      + " on disk. A copy would be written to " + baseName(copyPath(state.doc.path)) + " instead.";
+    el("ask").hidden = false;
+    el("ask-ok").focus();
+  } else {
+    doSave(false);
+  }
+});
+el("ask-ok").addEventListener("click", function () { el("ask").hidden = true; doSave(true); });
+el("ask-copy").addEventListener("click", function () { el("ask").hidden = true; doSave(false); });
+el("ask-no").addEventListener("click", function () { el("ask").hidden = true; el("btn-save").focus(); });
+
+el("err-close").addEventListener("click", clearError);
+
+function showError(title, detail) {
+  el("err-title").textContent = title;
+  el("err-detail").textContent = detail || "";
+  el("err").hidden = false;
+}
+function clearError() { el("err").hidden = true; }
+
+function setBusy(v) {
+  state.busy = !!v;
+  el("busy").hidden = !state.busy;
+  ["btn-undo", "btn-redo", "btn-render", "btn-save"].forEach(function (id) {
+    var b = el(id);
+    if (state.busy) b.disabled = true;
+  });
+  if (!state.busy) render(); else renderHint();
+}
+
+/* --- viewport --------------------------------------------------------- */
+
+var resizeTimer = null;
+function onResize() {
+  if (resizeTimer) cancelAnimationFrame(resizeTimer);
+  resizeTimer = requestAnimationFrame(layout);
+}
+window.addEventListener("resize", onResize);
+if (window.ResizeObserver) {
+  var ro = new ResizeObserver(onResize);
+  ro.observe(document.body);
+  // The stage also shrinks when a notice opens under it, which the body
+  // observer never sees — refit for that too.
+  ro.observe(document.querySelector(".stagewrap"));
+}
+
+/* --- boot ------------------------------------------------------------- */
+
+render();
+handshake();
+
+// A tiny surface for the test harness; harmless in a real host.
+window.__viewer = {
+  state: state,
+  apply: applyStructured,
+  zoom: function (z) { setZoom(z); },
+  split: function (p) { state.split = p; applyTransform(); }
+};
+
+})();
+</script>
+</body>
+</html>
