@@ -245,7 +245,7 @@ The "Later" rows in the matrix, 58 of them, include:
 
 ---
 
-## 5. Open decisions (need Darius)
+## 5. Open decisions (need the maintainer)
 
 1. **Name — settled 17 September 2026: OpenPhotoEdit.** The earlier
    working name, "OpenPhotoshop", used Adobe's registered mark and invited a
