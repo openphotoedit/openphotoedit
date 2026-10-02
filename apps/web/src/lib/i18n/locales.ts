@@ -1,11 +1,10 @@
 /**
  * The languages the editor ships in (the suite-wide set).
  *
- * Confirmed with jerry under APP-42. Deliberately a short list rather
- * than the thirty-odd a large competitor carries: every locale here is a
- * permanent commitment — each new string in the product needs a
- * translation in all of them, forever, and a half-translated interface
- * reads worse than an English one.
+ * Deliberately a short list rather than the thirty-odd a large competitor
+ * carries: every locale here is a permanent commitment — each new string in
+ * the product needs a translation in all of them, forever, and a
+ * half-translated interface reads worse than an English one.
  *
  * `name` is the language's name *in that language*. A picker that lists
  * "Chinese (Simplified)" in English is no use to someone who cannot read
