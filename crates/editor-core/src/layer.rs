@@ -94,6 +94,44 @@ impl LayerMask {
     }
 }
 
+/// Photoshop's "Knockout" advanced-blending setting.
+///
+/// A knockout layer punches a hole through what is beneath it and shows a
+/// lower backdrop instead: `Shallow` down to the bottom of the group the
+/// layer sits in, `Deep` all the way to the document's Background layer (or
+/// to transparency when the document has none). The hole is cut by the
+/// layer's *alpha*, not by its colour, and the layer's own fill opacity then
+/// decides how much of it paints back over the hole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Knockout {
+    #[default]
+    None,
+    Shallow,
+    Deep,
+}
+
+impl Knockout {
+    /// The value PSD's `knko` block stores.
+    pub fn psd_value(self) -> u8 {
+        match self {
+            Knockout::None => 0,
+            Knockout::Shallow => 1,
+            Knockout::Deep => 2,
+        }
+    }
+    pub fn from_psd_value(v: u8) -> Knockout {
+        match v {
+            1 => Knockout::Shallow,
+            2 => Knockout::Deep,
+            _ => Knockout::None,
+        }
+    }
+    pub fn is_on(self) -> bool {
+        self != Knockout::None
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GradientKind {
@@ -302,6 +340,12 @@ pub struct Layer {
     pub blend: BlendMode,
     /// Clipped to the nearest unclipped layer below.
     pub clip: bool,
+    /// Advanced blending: punch a hole through the layers beneath.
+    pub knockout: Knockout,
+    /// Photoshop's Background layer: the opaque bottom layer that carries no
+    /// transparency channel. Deep knockout stops here rather than cutting
+    /// through to transparency.
+    pub background: bool,
     pub locks: Locks,
     /// 0 = none, 1..7 = Photoshop's label colours.
     pub color_label: u8,
@@ -324,6 +368,8 @@ impl Layer {
             fill_opacity: 1.0,
             blend: BlendMode::Normal,
             clip: false,
+            knockout: Knockout::None,
+            background: false,
             locks: Locks::default(),
             color_label: 0,
             mask: None,

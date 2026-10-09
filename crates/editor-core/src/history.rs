@@ -131,6 +131,31 @@ impl History {
         }
     }
 
+    /// End a modal session (Liquify) that began with `index` steps on the
+    /// undo stack. Its steps stay separately undoable while it is open; on
+    /// commit they become one step labelled `label`, and on discard the
+    /// document goes back to how it was at `index` with nothing recorded.
+    /// Either way the session's undone strokes leave the redo stack. Returns
+    /// whether the history changed; a session with no steps left on the
+    /// stack (none made, or all undone) changes nothing.
+    pub fn squash(&mut self, index: usize, label: &str, discard: bool, current: &mut Document) -> bool {
+        self.commit_open();
+        if self.undo.len() <= index {
+            return false;
+        }
+        if discard {
+            self.go_to(index, current);
+        } else {
+            self.undo.truncate(index + 1);
+            let s = &mut self.undo[index];
+            s.label = label.to_string();
+            s.merge_key = None;
+        }
+        self.redo.clear();
+        self.open_merge = None;
+        true
+    }
+
     /// Close any open merge so the next record starts a new step.
     pub fn seal(&mut self) {
         self.open_merge = None;
@@ -287,5 +312,44 @@ mod tests {
         assert_eq!(doc.resolution, 72.0);
         assert!(!h.in_transaction());
         assert_eq!(h.redo_labels(), vec!["Move"]);
+    }
+
+    #[test]
+    fn squash_commits_a_session_as_one_step_or_discards_it() {
+        let mut doc = Document::new(10, 10);
+        let mut h = History::new();
+        h.record(&doc, "Open", None);
+        doc.resolution = 80.0;
+        let base = h.undo_labels().len();
+        for (i, r) in [90.0, 100.0, 110.0].into_iter().enumerate() {
+            h.record(&doc, "Liquify", Some(&format!("stroke{i}")));
+            doc.resolution = r;
+        }
+        assert_eq!(h.undo_labels(), vec!["Open", "Liquify", "Liquify", "Liquify"]);
+        // One stroke undone inside the session, then committed.
+        h.undo(&mut doc);
+        assert_eq!(doc.resolution, 100.0);
+        assert!(h.squash(base, "Liquify", false, &mut doc));
+        assert_eq!(h.undo_labels(), vec!["Open", "Liquify"]);
+        assert!(h.redo_labels().is_empty(), "the session's undone stroke is gone");
+        assert_eq!(doc.resolution, 100.0);
+        h.undo(&mut doc);
+        assert_eq!(doc.resolution, 80.0, "one undo takes the whole session back");
+        h.redo(&mut doc);
+
+        // A second session, discarded: the document returns exactly.
+        let base = h.undo_labels().len();
+        h.record(&doc, "Liquify", Some("a"));
+        doc.resolution = 300.0;
+        h.record(&doc, "Liquify", Some("b"));
+        doc.resolution = 400.0;
+        assert!(h.squash(base, "Liquify", true, &mut doc));
+        assert_eq!(doc.resolution, 100.0);
+        assert_eq!(h.undo_labels(), vec!["Open", "Liquify"]);
+        assert!(h.redo_labels().is_empty());
+
+        // Nothing made in the session: nothing changes.
+        assert!(!h.squash(h.undo_labels().len(), "Liquify", false, &mut doc));
+        assert_eq!(h.undo_labels(), vec!["Open", "Liquify"]);
     }
 }

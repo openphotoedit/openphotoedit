@@ -218,10 +218,13 @@ pub fn ai_looks_like_subject(m: &[u8]) -> bool {
 }
 
 /// Background-weighted blur; `background` is 255 where the background is.
+/// Transparent pixels contribute nothing, and the result is transparent
+/// where there was no background to blur (never black).
 #[wasm_bindgen]
 pub fn ai_background_blur(rgba: &[u8], w: u32, h: u32, background: &[u8], sigma: f32) -> Result<Vec<u8>, JsError> {
     let img = rgb(rgba, w, h)?;
-    Ok(blur::background_blur(&img, background, sigma).to_rgba(None))
+    let (out, alpha) = blur::background_blur_alpha(&img, Some(&alpha_of(rgba)), background, sigma);
+    Ok(out.to_rgba(Some(&alpha)))
 }
 
 #[wasm_bindgen]

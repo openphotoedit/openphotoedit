@@ -177,8 +177,10 @@ pub fn offset(buf: &mut [u8], w: usize, h: usize, dx: i32, dy: i32, wrap: bool) 
     }
 }
 
-/// Gradient noise at a lattice-scaled position.
-fn perlin(x: f64, y: f64, seed: u64) -> f64 {
+/// Gradient noise at a lattice-scaled position. Kept as the definition the
+/// cached octave loop in [`clouds`] must reproduce exactly.
+#[cfg(test)]
+pub(crate) fn perlin(x: f64, y: f64, seed: u64) -> f64 {
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
     let (xi, yi) = (x0 as i64, y0 as i64);
@@ -197,28 +199,116 @@ fn perlin(x: f64, y: f64, seed: u64) -> f64 {
     a + (b - a) * v
 }
 
+/// The lattice gradients one octave needs for the row being written, as
+/// `(cos a, sin a)` pairs. A cell of the coarsest octave is 1024 pixels
+/// across, so the four corner gradients — a hash, a cosine and a sine each —
+/// were being recomputed for every one of the million pixels inside it.
+/// Caching them per lattice row and rotating when the row advances leaves
+/// about one transcendental per thirty pixels instead of eighty per pixel,
+/// with the same values in the same order, so the image is unchanged.
+struct Octave {
+    period: f64,
+    amp: f64,
+    seed: u64,
+    /// First lattice column, and the columns cached (one past the last cell).
+    x0: i64,
+    /// Lattice row held in `rows[0]`; `None` before the first fill.
+    row0: Option<i64>,
+    rows: [Vec<[f64; 2]>; 2],
+}
+
+impl Octave {
+    fn fill(seed: u64, x0: i64, ly: i64, into: &mut [[f64; 2]]) {
+        for (i, slot) in into.iter_mut().enumerate() {
+            let a = (hash3(x0 + i as i64, ly, seed) >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+            *slot = [a.cos(), a.sin()];
+        }
+    }
+
+    /// Bring the cache to lattice row `ly`, reusing the lower row when the
+    /// previous call was one row above.
+    fn seek(&mut self, ly: i64) {
+        match self.row0 {
+            Some(prev) if prev == ly => return,
+            Some(prev) if prev + 1 == ly => {
+                self.rows.swap(0, 1);
+                let (seed, x0) = (self.seed, self.x0);
+                Octave::fill(seed, x0, ly + 1, &mut self.rows[1]);
+            }
+            _ => {
+                let (seed, x0) = (self.seed, self.x0);
+                Octave::fill(seed, x0, ly, &mut self.rows[0]);
+                Octave::fill(seed, x0, ly + 1, &mut self.rows[1]);
+            }
+        }
+        self.row0 = Some(ly);
+    }
+}
+
+fn fade(t: f64) -> f64 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
 /// Clouds: fractal gradient noise between the foreground and background
 /// colours, a function of document position (the same pattern however the
 /// canvas is selected), fully opaque.
 pub fn clouds(buf: &mut [u8], frame: &Frame, seed: u64, fg: Rgba8, bg: Rgba8, doc_size: u32) {
     let base = (doc_size as f64 / 3.0).clamp(96.0, 1024.0);
-    let octaves = (base.log2().ceil() as usize).max(1);
+    let octave_count = (base.log2().ceil() as usize).max(1);
     let (f, b) = (fg.to_array(), bg.to_array());
+    if frame.w == 0 || frame.h == 0 {
+        return;
+    }
+    // The octaves this document uses, stopping exactly where the per-pixel
+    // loop used to break.
+    let (px_first, px_last) = (frame.doc_x(0) as f64 + 0.5, frame.doc_x(frame.w - 1) as f64 + 0.5);
+    let mut octaves: Vec<Octave> = Vec::new();
+    let mut norm = 0.0;
+    {
+        let (mut amp, mut period) = (1.0f64, base);
+        for o in 0..octave_count {
+            let x0 = (px_first / period).floor() as i64;
+            let xn = (px_last / period).floor() as i64;
+            let n = (xn - x0 + 2) as usize;
+            octaves.push(Octave {
+                period,
+                amp,
+                seed: seed.wrapping_add(o as u64 * 7919),
+                x0,
+                row0: None,
+                rows: [vec![[0.0; 2]; n], vec![[0.0; 2]; n]],
+            });
+            norm += amp;
+            amp *= 0.5;
+            period /= 2.0;
+            if period < 1.5 {
+                break;
+            }
+        }
+    }
     for y in 0..frame.h {
+        let py = frame.doc_y(y) as f64 + 0.5;
+        for oc in octaves.iter_mut() {
+            oc.seek((py / oc.period).floor() as i64);
+        }
         for x in 0..frame.w {
-            let (px, py) = (frame.doc_x(x) as f64 + 0.5, frame.doc_y(y) as f64 + 0.5);
+            let px = frame.doc_x(x) as f64 + 0.5;
             let mut v = 0.0;
-            let mut amp = 1.0;
-            let mut period = base;
-            let mut norm = 0.0;
-            for o in 0..octaves {
-                v += amp * perlin(px / period, py / period, seed.wrapping_add(o as u64 * 7919));
-                norm += amp;
-                amp *= 0.5;
-                period /= 2.0;
-                if period < 1.5 {
-                    break;
-                }
+            for oc in octaves.iter() {
+                let (lx, ly) = (px / oc.period, py / oc.period);
+                let (x0, y0) = (lx.floor(), ly.floor());
+                let (fx, fy) = (lx - x0, ly - y0);
+                let i = (x0 as i64 - oc.x0) as usize;
+                let (g00, g10) = (oc.rows[0][i], oc.rows[0][i + 1]);
+                let (g01, g11) = (oc.rows[1][i], oc.rows[1][i + 1]);
+                let (u, w) = (fade(fx), fade(fy));
+                let n00 = g00[0] * fx + g00[1] * fy;
+                let n10 = g10[0] * (fx - 1.0) + g10[1] * fy;
+                let n01 = g01[0] * fx + g01[1] * (fy - 1.0);
+                let n11 = g11[0] * (fx - 1.0) + g11[1] * (fy - 1.0);
+                let a = n00 + (n10 - n00) * u;
+                let c = n01 + (n11 - n01) * u;
+                v += oc.amp * (a + (c - a) * w);
             }
             // Perlin output sits mostly within ±0.5 of the normaliser.
             let t = (0.5 + v / norm * 1.4).clamp(0.0, 1.0) as f32;

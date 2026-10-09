@@ -147,11 +147,21 @@ pub fn box_blur(p: &mut [f32], w: usize, h: usize, radius: f32) {
     if radius <= 0.0 || w == 0 || h == 0 {
         return;
     }
+    let mut tmp = vec![0f32; p.len()];
+    box_blur_into(p, &mut tmp, w, h, radius);
+}
+
+/// [`box_blur`] with the caller's scratch buffer. Reduce Noise blurs fifteen
+/// planes in a row; at 24 MP each one of those allocations is 96 MB that has
+/// to be faulted in and zeroed before the blur can start.
+pub fn box_blur_into(p: &mut [f32], tmp: &mut [f32], w: usize, h: usize, radius: f32) {
+    if radius <= 0.0 || w == 0 || h == 0 {
+        return;
+    }
     let r = radius.floor() as usize;
     let a = radius - r as f32;
-    let mut tmp = vec![0f32; p.len()];
-    ebox_h(p, &mut tmp, w, h, r, a);
-    ebox_v(&tmp, p, w, h, r, a);
+    ebox_h(p, tmp, w, h, r, a);
+    ebox_v(tmp, p, w, h, r, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +296,15 @@ pub fn radial(buf: &mut [u8], frame: &Frame, amount: f32, zoom: bool, cx: f32, c
     }
     let mut b = vec![0u16; a.len()];
     let (wm, hm) = ((w - 1) as f32, (h - 1) as f32);
+    // One pixel as four floats. Reading the four channels as a fixed-size
+    // array lets the compiler widen them in one `i16x8.extend` and do the
+    // interpolation four lanes at a time, where an indexed closure over
+    // `0..4` compiled to scalar loads with a bounds check each.
+    #[inline(always)]
+    fn quad(src: &[u16], i: usize) -> [f32; 4] {
+        let p: &[u16; 4] = src[i..i + 4].try_into().unwrap();
+        [p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]
+    }
     let sample = |src: &[u16], x: f32, y: f32| -> [f32; 4] {
         let fx = (x - 0.5).clamp(0.0, wm);
         let fy = (y - 0.5).clamp(0.0, hm);
@@ -293,11 +312,14 @@ pub fn radial(buf: &mut [u8], frame: &Frame, amount: f32, zoom: bool, cx: f32, c
         let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
         let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
         let (i00, i10, i01, i11) = ((y0 * w + x0) * 4, (y0 * w + x1) * 4, (y1 * w + x0) * 4, (y1 * w + x1) * 4);
-        std::array::from_fn(|c| {
-            let top = src[i00 + c] as f32 + (src[i10 + c] as f32 - src[i00 + c] as f32) * tx;
-            let bot = src[i01 + c] as f32 + (src[i11 + c] as f32 - src[i01 + c] as f32) * tx;
-            top + (bot - top) * ty
-        })
+        let (a, b, c, d) = (quad(src, i00), quad(src, i10), quad(src, i01), quad(src, i11));
+        let mut out = [0f32; 4];
+        for k in 0..4 {
+            let top = a[k] + (b[k] - a[k]) * tx;
+            let bot = c[k] + (d[k] - c[k]) * tx;
+            out[k] = top + (bot - top) * ty;
+        }
+        out
     };
     for j in 1..=passes {
         let t = total / (1u32 << (j + 1)) as f32;
@@ -308,13 +330,47 @@ pub fn radial(buf: &mut [u8], frame: &Frame, amount: f32, zoom: bool, cx: f32, c
         let still = 0.3 / t;
         for y in 0..h {
             let py = y as f32 + 0.5 - cy;
-            for x in 0..w {
+            // The pixels that move under 0.3 px form a disc, so on each row
+            // they are one run: copy it wholesale instead of testing and
+            // copying four values at a time. On the last passes of a large
+            // image that run is most of the row.
+            let still2 = still * still;
+            let inside = |x: usize| {
+                let px = x as f32 + 0.5 - cx;
+                px * px + py * py < still2
+            };
+            let (sx0, sx1) = {
+                let d2 = still2 - py * py;
+                if d2 <= 0.0 {
+                    (0usize, 0usize)
+                } else {
+                    // `|x + 0.5 − cx|` is convex in x, so the pixels that
+                    // pass form one run; the ends are then confirmed with the
+                    // same test the per-pixel version used, so a value that
+                    // lands exactly on the boundary goes the same way.
+                    let half = d2.sqrt();
+                    let mut lo = (cx - half - 0.5).floor().max(0.0) as usize;
+                    let mut hi = ((cx + half - 0.5).ceil().min(wm) as usize).min(w - 1);
+                    while lo <= hi && !inside(lo) {
+                        lo += 1;
+                    }
+                    while hi > lo && !inside(hi) {
+                        hi -= 1;
+                    }
+                    if lo <= hi && inside(lo) {
+                        (lo, hi + 1)
+                    } else {
+                        (0, 0)
+                    }
+                }
+            };
+            if sx1 > sx0 {
+                let (o0, o1) = ((y * w + sx0) * 4, (y * w + sx1) * 4);
+                b[o0..o1].copy_from_slice(&a[o0..o1]);
+            }
+            for x in (0..sx0).chain(sx1..w) {
                 let px = x as f32 + 0.5 - cx;
                 let o = (y * w + x) * 4;
-                if px * px + py * py < still * still {
-                    b[o..o + 4].copy_from_slice(&a[o..o + 4]);
-                    continue;
-                }
                 let (p1, p2) = if zoom {
                     ((cx + px * grow, cy + py * grow), (cx + px * shrink, cy + py * shrink))
                 } else {
@@ -366,98 +422,121 @@ pub fn radial(buf: &mut [u8], frame: &Frame, amount: f32, zoom: bool, cx: f32, c
 /// A sliding 256-bin histogram (Perreault–Hébert column histograms) makes
 /// the window cost independent of the radius; the weighted sum only visits
 /// bins within the threshold band.
+///
+/// The window histogram is kept whole rather than in lazily-refreshed
+/// segments. A segment scheme touches fewer bins on paper, but every stale
+/// segment costs a re-scan of `2r + 1` column histograms a kilobyte apart,
+/// and in a photograph the centre value — and so the band — moves at every
+/// pixel. Sliding all 256 bins is two contiguous 512-byte reads that stay in
+/// L1 and vectorise eight lanes wide. The window histogram is `u16` (a
+/// window holds at most 201² = 40 401 samples) and the column histograms
+/// `u8` (a column holds at most 201), which halves the traffic through the
+/// widest array and keeps it inside L2.
+///
+/// The numerator is accumulated as `Σ kern·tri·(bin − v)`, so the output is
+/// `v + that / den`: the value ramp is folded into the weight table and the
+/// inner loop reads two tables instead of three.
 pub fn surface(buf: &mut [u8], w: usize, h: usize, radius: usize, threshold: f32, write: (usize, usize, usize, usize)) {
     if radius == 0 || threshold <= 0.0 || w == 0 || h == 0 {
         return;
     }
+    let (wx0, wy0, wx1, wy1) = write;
+    if wx0 >= wx1 || wy0 >= wy1 {
+        return;
+    }
+    // Column counts are `u8`, so a column may hold at most 255 samples;
+    // `filter.surface-blur` clamps the radius to 100 long before this.
+    let radius = radius.min(127);
     let reach = 2.5 * threshold.clamp(1.0, 255.0);
     let k = (reach.ceil() as usize).min(255);
-    // Weights indexed by `bin − centre + k`, and bin values, as flat slices
-    // so the weighted sums vectorise.
+    // Weights indexed by `bin − centre + k`, and the same weights times the
+    // signed difference, as flat slices so the band sum vectorises.
     let tri: Vec<f32> = (0..=2 * k).map(|i| (1.0 - (i as f32 - k as f32).abs() / reach).max(0.0)).collect();
-    let ramp: Vec<f32> = (0..256).map(|b| b as f32).collect();
-    let src = buf.to_vec();
+    let trid: Vec<f32> = tri.iter().enumerate().map(|(i, t)| t * (i as f32 - k as f32)).collect();
     let r = radius as isize;
-    let (wx0, wy0, wx1, wy1) = write;
+    let (ymax, xmax) = (h as isize - 1, w as isize - 1);
+    // One channel at a time, as a contiguous plane: the histogram updates
+    // then read the source sequentially instead of striding by four.
+    let mut plane = vec![0u8; w * h];
+    let mut cols = vec![0u8; w * 256];
+    let mut kern = vec![0u16; 256];
+    let mut scratch = [0f32; 256];
     for c in 0..3 {
+        for (p, px) in plane.iter_mut().zip(buf.chunks_exact(4)) {
+            *p = px[c];
+        }
         // Column histograms over rows [y - r, y + r], clamped.
-        let mut cols = vec![0f32; w * 256];
-        let at = |y: isize, x: usize| src[(y.clamp(0, h as isize - 1) as usize * w + x) * 4 + c] as usize;
-        for x in 0..w {
-            for dy in -r..=r {
-                cols[x * 256 + at(wy0 as isize + dy, x)] += 1.0;
+        cols.fill(0);
+        for dy in -r..=r {
+            let row = &plane[(wy0 as isize + dy).clamp(0, ymax) as usize * w..][..w];
+            for (x, &v) in row.iter().enumerate() {
+                cols[x * 256 + v as usize] += 1;
             }
         }
-        let mut kern = vec![0f32; 256];
         for y in wy0..wy1 {
             if y > wy0 {
+                let drop = (y as isize - r - 1).clamp(0, ymax) as usize * w;
+                let take = (y as isize + r).clamp(0, ymax) as usize * w;
                 for x in 0..w {
-                    cols[x * 256 + at(y as isize - r - 1, x)] -= 1.0;
-                    cols[x * 256 + at(y as isize + r, x)] += 1.0;
+                    cols[x * 256 + plane[drop + x] as usize] -= 1;
+                    cols[x * 256 + plane[take + x] as usize] += 1;
                 }
             }
-            let col = |x: isize| x.clamp(0, w as isize - 1) as usize * 256;
-            // The window histogram is kept in 16-bin segments, each brought
-            // up to date only when the threshold band needs it.
-            let mut luc = [isize::MIN; 16];
+            kern.fill(0);
+            for dx in -r..=r {
+                let o = (wx0 as isize + dx).clamp(0, xmax) as usize * 256;
+                for (a, b) in kern.iter_mut().zip(&cols[o..o + 256]) {
+                    *a += *b as u16;
+                }
+            }
+            let row = &plane[y * w..][..w];
             for x in wx0..wx1 {
-                let xi = x as isize;
-                let v = src[(y * w + x) * 4 + c] as usize;
+                if x > wx0 {
+                    let a = (x as isize + r).clamp(0, xmax) as usize * 256;
+                    let s = (x as isize - r - 1).clamp(0, xmax) as usize * 256;
+                    let (add, rem) = (&cols[a..a + 256], &cols[s..s + 256]);
+                    for ((kv, av), sv) in kern.iter_mut().zip(add).zip(rem) {
+                        *kv = *kv + *av as u16 - *sv as u16;
+                    }
+                }
+                let v = row[x] as usize;
                 let lo = v.saturating_sub(k);
                 let hi = (v + k).min(255);
-                for seg in lo >> 4..=hi >> 4 {
-                    let base = seg * 16;
-                    if luc[seg] == isize::MIN || xi - luc[seg] > 2 * r + 1 {
-                        kern[base..base + 16].fill(0.0);
-                        for dx in -r..=r {
-                            let o = col(xi + dx) + base;
-                            for (kv, cv) in kern[base..base + 16].iter_mut().zip(&cols[o..o + 16]) {
-                                *kv += cv;
-                            }
-                        }
-                    } else {
-                        let seg_k: &mut [f32; 16] = (&mut kern[base..base + 16]).try_into().unwrap();
-                        for j in luc[seg] + 1..=xi {
-                            let (a, sub) = (col(j + r) + base, col(j - r - 1) + base);
-                            let add: &[f32; 16] = cols[a..a + 16].try_into().unwrap();
-                            let rem: &[f32; 16] = cols[sub..sub + 16].try_into().unwrap();
-                            for i in 0..16 {
-                                seg_k[i] += add[i] - rem[i];
-                            }
-                        }
-                    }
-                    luc[seg] = xi;
-                }
-                let (den, num) = weighted_sums(&kern[lo..=hi], &tri[k + lo - v..=k + hi - v], &ramp[lo..=hi]);
-                buf[(y * w + x) * 4 + c] = if den > 0.0 { to_u8(num / den) } else { v as u8 };
+                let (den, off) = band_sums(&kern[lo..=hi], &tri[k + lo - v..=k + hi - v], &trid[k + lo - v..=k + hi - v], &mut scratch);
+                buf[(y * w + x) * 4 + c] = if den > 0.0 { to_u8(v as f32 + off / den) } else { v as u8 };
             }
         }
     }
 }
 
-/// `(Σ a·b, Σ a·b·c)` accumulated in eight lanes so the compiler can use
-/// SIMD without reordering a single floating-point sum.
+/// `(Σ k·t, Σ k·d)` over the threshold band. The counts are widened into
+/// `scratch` first: one tight `u16 → f32` loop and one pure-float loop both
+/// vectorise, where the fused version compiles to scalar converts.
+/// Accumulated in four lanes, so the compiler can use SIMD without
+/// reordering a single floating-point sum.
 #[inline]
-fn weighted_sums(a: &[f32], b: &[f32], c: &[f32]) -> (f32, f32) {
-    let mut s0 = [0f32; 8];
-    let mut s1 = [0f32; 8];
-    let (ac, bc, cc) = (a.chunks_exact(8), b.chunks_exact(8), c.chunks_exact(8));
-    let (ar, br, cr) = (ac.remainder(), bc.remainder(), cc.remainder());
-    for ((a8, b8), c8) in ac.zip(bc).zip(cc) {
-        let a8: &[f32; 8] = a8.try_into().unwrap();
-        let b8: &[f32; 8] = b8.try_into().unwrap();
-        let c8: &[f32; 8] = c8.try_into().unwrap();
-        for l in 0..8 {
-            let wgt = a8[l] * b8[l];
-            s0[l] += wgt;
-            s1[l] += wgt * c8[l];
+fn band_sums(kern: &[u16], tri: &[f32], trid: &[f32], scratch: &mut [f32; 256]) -> (f32, f32) {
+    let kf = &mut scratch[..kern.len()];
+    for (o, k) in kf.iter_mut().zip(kern) {
+        *o = *k as f32;
+    }
+    let mut s0 = [0f32; 4];
+    let mut s1 = [0f32; 4];
+    let (kc, tc, dc) = (kf.chunks_exact(4), tri.chunks_exact(4), trid.chunks_exact(4));
+    let (kr, tr, dr) = (kc.remainder(), tc.remainder(), dc.remainder());
+    for ((k4, t4), d4) in kc.zip(tc).zip(dc) {
+        let k4: &[f32; 4] = k4.try_into().unwrap();
+        let t4: &[f32; 4] = t4.try_into().unwrap();
+        let d4: &[f32; 4] = d4.try_into().unwrap();
+        for l in 0..4 {
+            s0[l] += k4[l] * t4[l];
+            s1[l] += k4[l] * d4[l];
         }
     }
     let (mut t0, mut t1) = (s0.iter().sum::<f32>(), s1.iter().sum::<f32>());
-    for ((x, y), z) in ar.iter().zip(br).zip(cr) {
-        let wgt = x * y;
-        t0 += wgt;
-        t1 += wgt * z;
+    for ((x, y), z) in kr.iter().zip(tr).zip(dr) {
+        t0 += *x * y;
+        t1 += *x * z;
     }
     (t0, t1)
 }

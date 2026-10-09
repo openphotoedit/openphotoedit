@@ -22,6 +22,10 @@ export interface GlowFx {
   spread: number;
   size: number;
   source: "edge" | "center";
+  /** Photoshop's "Range", 0..1. */
+  range?: number;
+  /** A gradient glow fades through these instead of `color`. */
+  stops?: GradientStop[];
 }
 
 export interface BevelFx {
@@ -69,6 +73,30 @@ export interface GradientOverlayFx {
   angle: number;
   scale: number;
   reverse: boolean;
+  /** Centre offset as a fraction of the layer's bounds, ×100. */
+  offset?: [number, number];
+}
+
+/** The pixels of a pattern, as a PSD's `Patt` resource stores them. */
+export interface PatternImage {
+  width: number;
+  height: number;
+  /** Straight 8-bit RGBA, base64. */
+  rgba: string;
+}
+
+export interface PatternOverlayFx {
+  enabled: boolean;
+  blend: BlendMode;
+  opacity: number;
+  /** Per cent. */
+  scale: number;
+  angle: number;
+  phase: [number, number];
+  linked: boolean;
+  name: string;
+  id: string;
+  pattern: PatternImage | null;
 }
 
 export interface StrokeFx {
@@ -78,6 +106,10 @@ export interface StrokeFx {
   blend: BlendMode;
   opacity: number;
   color: Rgba8;
+  /** A gradient stroke paints the band with this instead of `color`. */
+  gradient?: GradientOverlayFx | null;
+  /** A pattern stroke paints the band with this instead of `color`. */
+  pattern?: PatternOverlayFx | null;
 }
 
 export interface LayerEffects {
@@ -91,10 +123,21 @@ export interface LayerEffects {
   satin: SatinFx | null;
   color_overlay: ColorOverlayFx | null;
   gradient_overlay: GradientOverlayFx | null;
+  /** Read from a PSD's `Patt` resource; the app has no pattern library, so
+      there is nothing to pick from and one cannot be added here. */
+  pattern_overlay?: PatternOverlayFx | null;
   stroke: StrokeFx | null;
+  /** Photoshop can stack several strokes; these draw after `stroke`. */
+  extra_strokes?: StrokeFx[];
+  /** Take the effect outline from the layer's mask alone (shape layers). */
+  outline_from_mask?: boolean;
 }
 
-export type EffectKey = Exclude<keyof LayerEffects, "enabled" | "scale">;
+/** The effects the Layer Style dialog can add and edit. */
+export type EffectKey = Exclude<keyof LayerEffects, "enabled" | "scale" | "pattern_overlay" | "extra_strokes" | "outline_from_mask">;
+
+/** Effects that only arrive with an imported file and cannot be created here. */
+export const READ_ONLY_EFFECTS = [{ key: "pattern_overlay", label: "Pattern Overlay" }] as const;
 
 export interface SmartFilter {
   filter: Record<string, unknown> & { op: string };
@@ -182,8 +225,17 @@ export function emptyEffects(): LayerEffects {
     satin: null,
     color_overlay: null,
     gradient_overlay: null,
+    pattern_overlay: null,
     stroke: null,
+    extra_strokes: [],
+    outline_from_mask: false,
   };
+}
+
+/** Does this style draw anything at all? Counts the effects the dialog does
+    not offer, so opening and accepting it never throws one away. */
+export function hasAnyEffect(fx: LayerEffects): boolean {
+  return EFFECTS.some((e) => fx[e.key]) || !!fx.pattern_overlay || !!fx.extra_strokes?.length;
 }
 
 export function activeEffects(fx: LayerEffects | null | undefined): EffectKey[] {

@@ -8,6 +8,7 @@ use editor_core::pixels::read_layer;
 use editor_core::render::flatten;
 use serde_json::{json, Value};
 
+mod equivalence;
 mod photo;
 
 pub fn editor(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 4]) -> Editor {

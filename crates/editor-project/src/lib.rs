@@ -26,7 +26,7 @@ use editor_core::blend::BlendMode;
 use editor_core::document::{DocMeta, Document, Guide, Sidecar};
 use editor_core::effects::LayerEffects;
 use editor_core::geom::Point;
-use editor_core::layer::{Fill, Layer, LayerId, LayerKind, LayerMask, Locks, Raster, ShapeData, SmartFilter, SmartSource, TextData};
+use editor_core::layer::{Fill, Knockout, Layer, LayerId, LayerKind, LayerMask, Locks, Raster, ShapeData, SmartFilter, SmartSource, TextData};
 use editor_core::plane::{Plane, TILE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -160,6 +160,10 @@ struct LayerJson {
     blend: BlendMode,
     #[serde(default)]
     clip: bool,
+    #[serde(default)]
+    knockout: Knockout,
+    #[serde(default)]
+    background: bool,
     #[serde(default)]
     locks: Locks,
     #[serde(default)]
@@ -359,6 +363,8 @@ impl Saver {
             fill_opacity: l.fill_opacity,
             blend: l.blend,
             clip: l.clip,
+            knockout: l.knockout,
+            background: l.background,
             locks: l.locks,
             color_label: l.color_label,
             provenance: l.provenance.clone(),
@@ -488,6 +494,8 @@ impl Loader<'_> {
         layer.fill_opacity = l.fill_opacity.clamp(0.0, 1.0);
         layer.blend = l.blend;
         layer.clip = l.clip;
+        layer.knockout = l.knockout;
+        layer.background = l.background;
         layer.locks = l.locks;
         layer.color_label = l.color_label;
         layer.provenance = l.provenance;

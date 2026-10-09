@@ -93,6 +93,16 @@ impl Editor {
                 }
                 return Ok(json!({ "changed": changed, "revision": self.revision }));
             }
+            "edit.squash" => {
+                let index = v.get("index").and_then(Value::as_u64).ok_or_else(|| EditorError::Json("missing `index`".into()))? as usize;
+                let label = v.get("label").and_then(Value::as_str).unwrap_or("Edit").to_string();
+                let discard = v.get("discard").and_then(Value::as_bool).unwrap_or(false);
+                let changed = self.history.squash(index, &label, discard, &mut self.doc);
+                if changed {
+                    self.revision += 1;
+                }
+                return Ok(json!({ "changed": changed, "revision": self.revision }));
+            }
             "edit.clear-history" => {
                 self.history.clear();
                 return Ok(json!({ "changed": false }));

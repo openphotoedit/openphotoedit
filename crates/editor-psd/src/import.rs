@@ -6,7 +6,7 @@ use editor_core::adjust::Adjustment;
 use editor_core::blend::BlendMode;
 use editor_core::document::{Document, Guide};
 use editor_core::geom::Rect;
-use editor_core::layer::{Layer, LayerId, LayerKind, LayerMask, Locks, Raster, SmartSource};
+use editor_core::layer::{Knockout, Layer, LayerId, LayerKind, LayerMask, Locks, Raster, SmartSource};
 use editor_core::plane::Plane;
 
 use crate::color::{color_channels, mode_to_rgb, to_u8};
@@ -48,6 +48,8 @@ struct Ctx<'a, 'f> {
     budget: u64,
     warnings: Vec<String>,
     light: GlobalLight,
+    /// The file's pattern library, for pattern overlays.
+    patterns: crate::pattern::Patterns,
     linked: Vec<LinkedFile<'a>>,
     opts: &'f ImportOptions,
     nesting: u32,
@@ -93,7 +95,9 @@ fn import_nested(bytes: &[u8], opts: &ImportOptions, nesting: u32, budget: u64) 
         altitude: file.resource(1049).and_then(|d| Reader::new(d).i32().ok()).map(|v| v as f32).unwrap_or(30.0),
     };
     let native = h.depth == 8 && h.mode == MODE_RGB;
-    let mut cx = Ctx { file: &file, budget, warnings: Vec::new(), light, linked, opts, nesting, native, sidecar: Sidecar::default(), sources: Default::default() };
+    let patterns = crate::pattern::read_all(&file);
+    let mut cx =
+        Ctx { file: &file, budget, warnings: Vec::new(), light, patterns, linked, opts, nesting, native, sidecar: Sidecar::default(), sources: Default::default() };
 
     if h.depth != 8 {
         cx.warn(format!("This {}-bit document was converted to 8 bits per channel.", h.depth));
@@ -264,6 +268,11 @@ fn common(cx: &mut Ctx, rec: &LayerRecord, used: &mut HashSet<LayerId>, next_fre
     if let Some(c) = rec.block(b"lclr").and_then(|d| Reader::new(d).u16().ok()) {
         l.color_label = if c <= 7 { c as u8 } else { 0 };
     }
+    l.knockout = rec.block(b"knko").and_then(|d| d.first()).map(|&v| Knockout::from_psd_value(v)).unwrap_or_default();
+    // Photoshop's Background layer carries no transparency channel. `lnsr`
+    // says the same thing and survives our own export, so a round-tripped
+    // file still knows where deep knockout has to stop.
+    l.background = rec.channel(-1).is_none() || rec.block(b"lnsr").is_some_and(|d| d == b"bgnd");
     l
 }
 
@@ -651,11 +660,16 @@ fn finish_layer<'a>(cx: &mut Ctx<'a, '_>, rec: &LayerRecord<'a>, layer: &mut Lay
         }
     }
     if let Some(d) = get(b"lfx2").or(get(b"lmfx")) {
-        match effects::read(d, cx.light) {
-            Ok((fx, dropped)) => {
+        let read = effects::read(d, cx.light, &cx.patterns);
+        match read {
+            Ok((mut fx, dropped)) => {
                 for what in dropped {
                     cx.warn(format!("Layer style: {what} is not supported."));
                 }
+                // A fill layer's shape is its vector mask, not the fill's own
+                // transparency: Photoshop strokes the path, so a gradient
+                // fill that fades to nothing still gets a full outline.
+                fx.outline_from_mask = matches!(layer.kind, LayerKind::Fill(_)) && layer.mask.is_some();
                 layer.effects = Some(fx);
             }
             Err(e) => cx.warn(format!("A layer style could not be read ({e}); Photoshop will still show it.")),
@@ -667,9 +681,6 @@ fn finish_layer<'a>(cx: &mut Ctx<'a, '_>, rec: &LayerRecord<'a>, layer: &mut Lay
     let non_default_ranges = rec.blending_ranges.chunks(4).any(|c| c.len() == 4 && c != [0, 0, 255, 255]);
     if non_default_ranges {
         cx.warn("\u{201c}Blend If\u{201d} settings are kept for Photoshop but not shown here.");
-    }
-    if get(b"knko").is_some_and(|d| d.first().is_some_and(|&v| v != 0)) {
-        cx.warn("Knockout settings are kept for Photoshop but not shown here.");
     }
     if get(b"clbl").is_some_and(|d| d.first() == Some(&0)) {
         cx.warn("\u{201c}Blend clipped layers as group\u{201d} is off in this file; clipped layers are blended as a group here.");

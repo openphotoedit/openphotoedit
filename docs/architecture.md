@@ -54,7 +54,7 @@ Several workstreams build in parallel **in the same checkout**. Only edit files 
 - **Wasm**: rebuild with `scripts/build-wasm.sh --dev` (serialised by a lock; safe to run concurrently).
 - **Dev server ports** (avoid collisions with sibling products): core 5203, filters 5211, paint 5212, transform 5213, psd 5214, ai 5215, server 5216, tools 5217, pro 5218, lite 5219. Start with `npx vite --port <p> --strictPort` from `apps/web`.
 - **No third-party requests at run time.** Models, the ONNX runtime `.wasm` files and fonts are served from our own origin. No CDNs, no analytics.
-- **Licences**: the app is AGPL-3.0-or-later. Model weights must allow commercial use and redistribution — check `docs/research/04-local-ai.md` §5 before adding any model.
+- **Licences**: the app is AGPL-3.0-or-later. Model weights must allow commercial use and redistribution — read the rule in `MODELS.md` before adding any model.
 - **Design**: use the vendored tokens (`apps/web/src/vendor/tokens`) through semantic variables only (`--text-muted`, `--surface-card`, …), the `oa-` component classes in `src/styles/components.css`, and Lucide icons (`@lucide/svelte/icons/<name>`). No emoji as icons. Pro renders in `oa-dark`; Lite follows the OS. Control heights come from `--control-h-*`.
 - **Copy**: sentence case, plain words, active voice. A button says what happens. Errors say what went wrong and what to do.
 - **Tests**: Rust unit tests next to the code; real photos in `testdata/` over synthetic fixtures where the behaviour depends on content. UI flows get a Playwright check under `apps/web/e2e/`.

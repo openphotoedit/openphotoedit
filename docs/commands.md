@@ -11,6 +11,7 @@ Status: **✓ implemented** · **◻ contract** (a backend workstream implements
 | `edit.undo` / `edit.redo` | — | not recorded |
 | `edit.history-go` | `index` | jump so `index` entries remain on the undo stack |
 | `edit.seal` | — | close the current merge group (end of a slider drag) |
+| `edit.squash` | `index, label?, discard?` | end a modal session (Liquify) begun with `index` steps on the stack: its steps become one step named `label`, or with `discard` the document returns to `index` and nothing is recorded; drops redo |
 
 ## Document and layers (core ✓)
 

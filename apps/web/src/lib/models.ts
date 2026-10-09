@@ -248,6 +248,10 @@ export interface DownloadProgress {
 export async function fetchModel(id: string, onProgress?: (p: DownloadProgress) => void): Promise<Uint8Array[]> {
   const spec = MODELS[id];
   if (!spec) throw new Error(`unknown model ${id}`);
+  // Over plain http the browser withholds WebCrypto and Cache Storage, so a
+  // download could be neither verified nor kept: it would fetch every byte,
+  // fail on the checksum, and fetch them all again next time. Say so first.
+  if (!globalThis.crypto?.subtle) throw new Error("AI features need a secure connection. Open this page with https:// and try again.");
   const total = modelBytes(id);
   const cache = await openCache();
   const out: Uint8Array[] = [];

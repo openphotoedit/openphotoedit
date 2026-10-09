@@ -266,10 +266,13 @@ fn the_server_does_what_it_says_over_real_stdio() {
         "save_document",
         "close_document",
         "render_preview",
+        // The Photoshop gauntlet's launcher. It answers whether or not the
+        // demo is running; without --agui-port it says how to start it.
+        "start_gauntlet",
     ] {
         assert!(names.contains(&expected), "{expected} is missing from tools/list");
     }
-    assert_eq!(names.len(), 22, "the tool list changed: {names:?}");
+    assert_eq!(names.len(), 23, "the tool list changed: {names:?}");
     for tool in tools {
         assert!(
             tool["description"].as_str().unwrap_or("").len() > 40,

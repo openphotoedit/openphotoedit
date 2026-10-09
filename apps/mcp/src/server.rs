@@ -1380,6 +1380,52 @@ impl OpenPhotoEdit {
         result.structured_content = Some(data);
         Ok(result)
     }
+
+    #[tool(
+        name = "start_gauntlet",
+        description = "Open the Photoshop gauntlet: this renderer against Adobe's own output, \
+                       live, over the whole PSD corpus. Returns the URL to open in a browser \
+                       and says whether a run is already streaming. The demo has to have been \
+                       started with --agui-port; this tool does not open a port of its own.",
+        annotations(read_only_hint = true)
+    )]
+    fn start_gauntlet(&self) -> Result<CallToolResult, ErrorData> {
+        let Some(launch) = crate::gauntlet::launch() else {
+            return Err(bad(
+                "the gauntlet is not running — restart the server with --agui-port 5261 \
+                 (and --no-stdio if you only want the demo)",
+            ));
+        };
+        let active = crate::gauntlet::active_runs();
+        let text = format!(
+            "The Photoshop gauntlet is at {}\n\
+             {} corpus files under {}\n\
+             {}\n\n\
+             Opening the page starts a fresh run; a second viewer gets its own run rather than \
+             joining this one. Add ?pace=0 for full speed or ?filter=<substring> for a subset.",
+            launch.url(),
+            launch.files,
+            launch.corpus.display(),
+            match active {
+                0 => "No run is streaming right now.".to_string(),
+                1 => "One run is streaming right now.".to_string(),
+                n => format!("{n} runs are streaming right now."),
+            }
+        );
+        Reply::new(
+            text,
+            json!({
+                "url": launch.url(),
+                "endpoint": launch.endpoint(),
+                "corpus": launch.corpus.display().to_string(),
+                "ui_dir": launch.ui_dir.display().to_string(),
+                "files": launch.files,
+                "running": active > 0,
+                "active_runs": active,
+            }),
+        )
+        .build()
+    }
 }
 
 /// Copy the fields of `extra` into `into`, which must be an object.

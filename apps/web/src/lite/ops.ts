@@ -8,6 +8,7 @@ import { DEVELOP_DEFAULT, type Develop } from "../engine/types";
 import { estimateAuto, lookDevelop, lookTint, LOOKS, sanitize, type AutoStyle, type Look } from "./develop";
 import { adjustments, ADJUSTMENTS, FRAME, isUnknownOp, lite, look, LOOK, LOOK_TINT } from "./lite.svelte";
 import { comingSoon, runFeature } from "./run";
+import { activatePixels } from "./tools.svelte";
 import { decodeThumb, docSignature } from "./previews.svelte";
 import { renderText } from "../lib/text";
 import type { TextData } from "../engine/types";
@@ -330,14 +331,24 @@ function hexRgb(hex: string) {
 // ---------------------------------------------------------------------------
 // AI
 
+// These models write into the active pixel layer. Lite shows no layer list,
+// and its sliders, Looks and captions each leave their own layer active, so
+// make the photo active first rather than ask for a layer nobody can pick.
+const onPhoto = (fn: () => Promise<unknown>) => async () => {
+  await activatePixels();
+  return fn();
+};
+
 export const selectSubject = () => runFeature("subject", t("Select subject"), () => ai.selectSubject());
-export const removeBackground = () => runFeature("remove-bg", t("Remove background"), () => ai.removeBackground());
-export const blurBackground = (amount = 12) => runFeature("blur-bg", t("Blur background"), () => ai.blurBackground(amount));
-export const upscale = (factor: 2 | 4, quality: ai.Quality) => runFeature(`upscale-${factor}`, t("Upscale"), () => ai.upscale(factor, { quality }));
-export const denoise = (strength: "low" | "medium" | "high" = "medium") => runFeature("denoise", t("Denoise"), () => ai.denoise(strength));
-export const cleanJpeg = () => runFeature("jpeg", t("Clean up JPEG"), () => ai.removeJpegArtifacts());
-export const restoreFaces = () => runFeature("faces", t("Restore faces"), () => ai.restoreFaces());
-export const colorize = () => runFeature("colorize", t("Colorize"), () => ai.colorize());
+// Lite's only selection here is the one "Select subject" made, and clipping
+// the removal to the subject would remove nothing.
+export const removeBackground = () => runFeature("remove-bg", t("Remove background"), onPhoto(() => ai.removeBackground({ inSelection: false })));
+export const blurBackground = (amount = 12) => runFeature("blur-bg", t("Blur background"), onPhoto(() => ai.blurBackground(amount)));
+export const upscale = (factor: 2 | 4, quality: ai.Quality) => runFeature(`upscale-${factor}`, t("Upscale"), onPhoto(() => ai.upscale(factor, { quality })));
+export const denoise = (strength: "low" | "medium" | "high" = "medium") => runFeature("denoise", t("Denoise"), onPhoto(() => ai.denoise(strength)));
+export const cleanJpeg = () => runFeature("jpeg", t("Clean up JPEG"), onPhoto(() => ai.removeJpegArtifacts()));
+export const restoreFaces = () => runFeature("faces", t("Restore faces"), onPhoto(() => ai.restoreFaces()));
+export const colorize = () => runFeature("colorize", t("Colorize"), onPhoto(() => ai.colorize()));
 
 /** Brighten whatever is selected (the subject) with its own masked layer. */
 export async function brightenSubject() {

@@ -219,6 +219,17 @@ function decoderEmbeddings(dec: Made, cache: NonNullable<typeof samCache>) {
   return { "image_embeddings.0": t("image_embeddings.0"), "image_embeddings.1": t("image_embeddings.1"), "image_embeddings.2": t("image_embeddings.2") };
 }
 
+/** The share of the background (weighted by `bg`) that `rgba` has visible pixels in. */
+function visibleShare(rgba: Uint8Array, bg: Uint8Array): number {
+  let all = 0;
+  let seen = 0;
+  for (let i = 0; i < bg.length; i++) {
+    all += bg[i];
+    seen += bg[i] * rgba[i * 4 + 3];
+  }
+  return all ? seen / (all * 255) : 1;
+}
+
 function invert(m: Uint8Array): Uint8Array {
   const out = new Uint8Array(m.length);
   for (let i = 0; i < m.length; i++) out[i] = 255 - m[i];
@@ -350,15 +361,17 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
     const { matte, model, w, h } = await subjectMatte(ctx, String(ctx.params.model ?? "auto"));
     t.mark("matte");
     // Combine with a mask the layer already has (it only ever hides more),
-    // and limit the removal to the selection when there is one.
+    // and limit the removal to the selection when there is one, unless the
+    // caller says the selection is the subject itself.
+    const inSelection = !!s.selection && ctx.params.inSelection !== false;
     const existing = layer.mask ? ctx.engine.mask_region(layer.id, 0, 0, w, h) : new Uint8Array(0);
-    const selection = s.selection ? ctx.engine.selection_region(0, 0, w, h) : new Uint8Array(0);
+    const selection = inSelection ? ctx.engine.selection_region(0, 0, w, h) : new Uint8Array(0);
     const combined = wasm.ai_combine_masks(matte, existing, selection);
     oneStep(ctx.engine, "Remove Background", () => {
       if (!layer.mask) exec(ctx.engine, { op: "layer.add-mask", id: layer.id, from: "reveal-all" });
       exec(ctx.engine, { op: "layer.set-mask-pixels", id: layer.id, x: 0, y: 0, width: w, height: h }, combined);
     });
-    return { changed: true, result: { model, layer: layer.id, combined: !!layer.mask, inSelection: !!s.selection, timings: t.done() } };
+    return { changed: true, result: { model, layer: layer.id, combined: !!layer.mask, inSelection, timings: t.done() } };
   },
 
   "ai.blur-background": async (ctx) => {
@@ -367,23 +380,46 @@ const handlers: Record<string, (ctx: JobContext) => Promise<JobOutput>> = {
     const s = summary(ctx.engine);
     const { width: w, height: h } = s;
     const amount = Math.max(1, Math.min(100, Number(ctx.params.amount ?? 12)));
-    const { matte, model } = await subjectMatte(ctx, String(ctx.params.model ?? "auto"));
-    t.mark("matte");
-    const layer = activePixelLayer(s);
-    const src = layer ? ctx.engine.layer_region(layer.id, 0, 0, w, h) : ctx.engine.region(0, 0, w, h);
-    const bg = invert(matte);
     const sigma = (Math.max(w, h) * amount) / 1000;
+    const layer = activePixelLayer(s);
+    // Remove background hides the background with a layer mask and keeps the
+    // photo's pixels. Read through that mask, every background pixel is
+    // transparent black, and blurring it gave a solid black background. The
+    // background to blur is the one the mask hides: blur the layer's own
+    // pixels, weighted by the mask, and put the result under the layer,
+    // where the mask lets it show.
+    const cutout = !!layer?.mask?.enabled;
+    let src: Uint8Array;
+    let bg: Uint8Array;
+    let model: string | null = null;
+    if (layer && cutout) {
+      src = ctx.engine.layer_region_unmasked(layer.id, 0, 0, w, h);
+      bg = invert(ctx.engine.mask_region(layer.id, 0, 0, w, h));
+    } else {
+      const m = await subjectMatte(ctx, String(ctx.params.model ?? "auto"));
+      t.mark("matte");
+      model = m.model;
+      src = layer ? ctx.engine.layer_region(layer.id, 0, 0, w, h) : ctx.engine.region(0, 0, w, h);
+      bg = invert(m.matte);
+    }
+    // Pixels that are really gone (a transparent PNG, an applied mask) leave
+    // nothing to blur; say so rather than make a layer of nothing.
+    if (visibleShare(src, bg) < 0.02) throw new Error("The background is already transparent, so there is nothing to blur. Blur background needs a photo that still has its background.");
     ctx.progress({ message: "Blurring the background" });
     const blurred = wasm.ai_background_blur(src, w, h, bg, sigma);
     t.mark("blur");
     let id = 0;
     oneStep(ctx.engine, "Blur Background", () => {
-      const r = exec(ctx.engine, { op: "layer.import", width: w, height: h, x: 0, y: 0, name: "Background blur", above: layer?.id, provenance: `ai:${model}` }, blurred);
+      const r = exec(ctx.engine, { op: "layer.import", width: w, height: h, x: 0, y: 0, name: "Background blur", above: layer?.id, provenance: model ? `ai:${model}` : undefined }, blurred);
       id = r.data?.id as number;
-      exec(ctx.engine, { op: "layer.add-mask", id, from: "reveal-all" });
-      exec(ctx.engine, { op: "layer.set-mask-pixels", id, x: 0, y: 0, width: w, height: h }, bg);
+      if (cutout) {
+        exec(ctx.engine, { op: "layer.reorder", id, direction: "down" });
+      } else {
+        exec(ctx.engine, { op: "layer.add-mask", id, from: "reveal-all" });
+        exec(ctx.engine, { op: "layer.set-mask-pixels", id, x: 0, y: 0, width: w, height: h }, bg);
+      }
     });
-    return { changed: true, result: { model, layer: id, sigma, timings: t.done() } };
+    return { changed: true, result: { model, layer: id, sigma, cutout, timings: t.done() } };
   },
 
   "ai.select-object": async (ctx) => {

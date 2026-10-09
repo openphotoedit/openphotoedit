@@ -547,6 +547,12 @@ fn layer_records(out: &mut Out, l: &Layer, records: &mut Vec<Record>) -> Result<
     }
 
     blocks.extend(extra.blocks.iter().cloned());
+    // Knockout. An imported layer keeps the file's own `knko` block, so a
+    // round trip is byte for byte; a layer that has one only in the document
+    // model gets a fresh block.
+    if l.knockout.is_on() && !blocks.iter().any(|(k, _)| k == b"knko") {
+        blocks.push((*b"knko", vec![l.knockout.psd_value(), 0, 0, 0]));
+    }
     rec.blocks = blocks;
     records.push(rec);
     Ok(())

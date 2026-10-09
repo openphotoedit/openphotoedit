@@ -254,7 +254,7 @@ const HOST_PAGE = `<!doctype html>
       var redo = (opts.redo === undefined ? 0 : opts.redo) ? ["Warm grade"] : [];
       return {
         session_id: H.session,
-        path: opts.path === null ? "" : (opts.path || "/Users/dk/Pictures/harbour-dusk.psd"),
+        path: opts.path === null ? "" : (opts.path || "/Users/me/Pictures/harbour-dusk.psd"),
         format: "psd",
         family: "layered",
         width: 3600,
@@ -434,7 +434,7 @@ async function run() {
       produced.push(await shot(page, `01-empty-${tag}`));
 
       /* 2. open_document lands first: one preview, nothing to compare with */
-      await page.evaluate(() => window.__host.pushInput({ path: "/Users/dk/Pictures/harbour-dusk.psd" }));
+      await page.evaluate(() => window.__host.pushInput({ path: "/Users/me/Pictures/harbour-dusk.psd" }));
       await page.waitForTimeout(60);
       await page.evaluate(() => window.__host.pushResult({ edited: false, revision: 0, undo: 1 }));
       await page.waitForTimeout(450);
@@ -554,7 +554,7 @@ async function run() {
         window.__host.log.find((e) => e.method === "tools/call" && e.params.name === "save_document"));
       const sa = saveCall ? saveCall.params.arguments : {};
       check(!!saveCall && sa.overwrite === true
-            && sa.output_path === "/Users/dk/Pictures/harbour-dusk.psd"
+            && sa.output_path === "/Users/me/Pictures/harbour-dusk.psd"
             && sa.session_id === "ph_7f3c91",
         `save_document overwrote only after the prompt (${tag})`, JSON.stringify(sa));
 
@@ -566,7 +566,7 @@ async function run() {
       const copyCall = await page.evaluate(() =>
         window.__host.log.filter((e) => e.method === "tools/call" && e.params.name === "save_document").pop());
       const ca = copyCall ? copyCall.params.arguments : {};
-      check(ca.overwrite === false && ca.output_path === "/Users/dk/Pictures/harbour-dusk-edited.psd",
+      check(ca.overwrite === false && ca.output_path === "/Users/me/Pictures/harbour-dusk-edited.psd",
         `save a copy writes beside the original (${tag})`, JSON.stringify(ca));
 
       /* 8. no CSP violations and nothing uncaught */

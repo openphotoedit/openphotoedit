@@ -1,7 +1,6 @@
 //! Noise: Add Noise, Reduce Noise, Median, Dust & Scratches, Minimum and
 //! Maximum, plus the noise estimators the analysis ops share.
 
-use crate::blur::box_blur;
 use crate::util::{hash3, to_u8, unit, Frame};
 
 // ---------------------------------------------------------------------------
@@ -124,22 +123,30 @@ pub fn quantile(v: &[f32], q: f32) -> f32 {
 // Reduce Noise
 
 /// Levels of the à-trous decomposition, and the aprons that reach needs.
-const LEVELS: usize = 5;
+pub(crate) const LEVELS: usize = 5;
 pub const DENOISE_REACH: i32 = 2 * ((1 << LEVELS) - 1) + 8;
 
 /// Standard deviation of unit white noise in each B3-spline à-trous detail
 /// layer (Starck & Murtagh).
-const B3_NOISE: [f32; LEVELS] = [0.889, 0.200, 0.086, 0.041, 0.020];
+pub(crate) const B3_NOISE: [f32; LEVELS] = [0.889, 0.200, 0.086, 0.041, 0.020];
 
 /// One B3-spline smoothing step with holes of `step` pixels.
-fn atrous_smooth(src: &[f32], dst: &mut [f32], tmp: &mut [f32], w: usize, h: usize, step: usize) {
+///
+/// Both passes are split into edges and a middle that cannot leave the
+/// buffer, so the middle — which is all but `4 · step` columns and rows —
+/// runs as a straight five-tap loop with no clamping and no bounds checks.
+/// The vertical pass writes each output row once from five source rows
+/// instead of accumulating over six passes. Neither changes the order the
+/// five taps are added, so the result is bit-identical.
+pub(crate) fn atrous_smooth(src: &[f32], dst: &mut [f32], tmp: &mut [f32], w: usize, h: usize, step: usize) {
     const K: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
     let s = step as isize;
     let (wi, hi) = (w as isize - 1, h as isize - 1);
+    let (mx0, mx1) = split(w, 2 * step);
     for y in 0..h {
         let row = &src[y * w..(y + 1) * w];
         let out = &mut tmp[y * w..(y + 1) * w];
-        for x in 0..w {
+        let edge = |x: usize, out: &mut [f32]| {
             let xi = x as isize;
             let mut acc = 0f32;
             for (k, kw) in K.iter().enumerate() {
@@ -147,9 +154,25 @@ fn atrous_smooth(src: &[f32], dst: &mut [f32], tmp: &mut [f32], w: usize, h: usi
                 acc += kw * row[xx];
             }
             out[x] = acc;
+        };
+        for x in 0..mx0 {
+            edge(x, out);
+        }
+        for x in mx1..w {
+            edge(x, out);
+        }
+        if mx0 < mx1 {
+            let (a, b, c, d, e) = (&row[mx0 - 2 * step..], &row[mx0 - step..], &row[mx0..], &row[mx0 + step..], &row[mx0 + 2 * step..]);
+            for (i, o) in out[mx0..mx1].iter_mut().enumerate() {
+                *o = K[0] * a[i] + K[1] * b[i] + K[2] * c[i] + K[3] * d[i] + K[4] * e[i];
+            }
         }
     }
+    let (my0, my1) = split(h, 2 * step);
     for y in 0..h {
+        if y >= my0 && y < my1 {
+            continue;
+        }
         let out = &mut dst[y * w..(y + 1) * w];
         out.fill(0.0);
         for (k, kw) in K.iter().enumerate() {
@@ -160,6 +183,25 @@ fn atrous_smooth(src: &[f32], dst: &mut [f32], tmp: &mut [f32], w: usize, h: usi
             }
         }
     }
+    for y in my0..my1 {
+        let (a, b, c, d, e) = (
+            &tmp[(y - 2 * step) * w..(y - 2 * step) * w + w],
+            &tmp[(y - step) * w..(y - step) * w + w],
+            &tmp[y * w..y * w + w],
+            &tmp[(y + step) * w..(y + step) * w + w],
+            &tmp[(y + 2 * step) * w..(y + 2 * step) * w + w],
+        );
+        let out = &mut dst[y * w..(y + 1) * w];
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = K[0] * a[i] + K[1] * b[i] + K[2] * c[i] + K[3] * d[i] + K[4] * e[i];
+        }
+    }
+}
+
+/// The half-open range of indices at least `pad` from either end.
+fn split(n: usize, pad: usize) -> (usize, usize) {
+    let lo = pad.min(n);
+    (lo, n.saturating_sub(pad).max(lo))
 }
 
 /// Wavelet denoising of one plane: an undecimated B3-spline à-trous
@@ -168,24 +210,46 @@ fn atrous_smooth(src: &[f32], dst: &mut [f32], tmp: &mut [f32], w: usize, h: usi
 /// window. Returns the noise sigma it estimated (from the median absolute
 /// finest-level coefficient) when `sigma` is `None`.
 pub fn wavelet_denoise(p: &mut [f32], w: usize, h: usize, sigma: Option<f32>, k: [f32; LEVELS]) -> f32 {
+    let mut scratch = Scratch::new(w * h);
+    wavelet_denoise_with(&mut scratch, p, w, h, sigma, k)
+}
+
+/// The six full-size planes the decomposition needs, allocated once. At
+/// 24 MP each is 96 MB, and Reduce Noise runs the decomposition three times.
+pub(crate) struct Scratch {
+    c: Vec<f32>,
+    next: Vec<f32>,
+    d: Vec<f32>,
+    e: Vec<f32>,
+    out: Vec<f32>,
+    tmp: Vec<f32>,
+}
+
+impl Scratch {
+    pub(crate) fn new(n: usize) -> Scratch {
+        Scratch { c: vec![0.0; n], next: vec![0.0; n], d: vec![0.0; n], e: vec![0.0; n], out: vec![0.0; n], tmp: vec![0.0; n] }
+    }
+}
+
+pub(crate) fn wavelet_denoise_with(s: &mut Scratch, p: &mut [f32], w: usize, h: usize, sigma: Option<f32>, k: [f32; LEVELS]) -> f32 {
     let n = w * h;
     if w < 4 || h < 4 {
         return 0.0;
     }
-    let mut c = p.to_vec();
-    let mut next = vec![0f32; n];
-    let mut d = vec![0f32; n];
-    let mut e = vec![0f32; n];
-    let mut out = vec![0f32; n];
+    let Scratch { c, next, d, e, out, tmp } = s;
+    c[..n].copy_from_slice(&p[..n]);
+    out[..n].fill(0.0);
     let mut sigma_used = sigma.unwrap_or(0.0);
     for (j, &kj) in k.iter().enumerate() {
-        atrous_smooth(&c, &mut next, &mut d, w, h, 1 << j);
+        atrous_smooth(&c[..n], &mut next[..n], &mut tmp[..n], w, h, 1 << j);
         for i in 0..n {
             d[i] = c[i] - next[i];
         }
         if j == 0 && sigma.is_none() {
-            let abs: Vec<f32> = d.iter().map(|v| v.abs()).collect();
-            sigma_used = quantile(&abs, 0.5) / 0.6745 / B3_NOISE[0];
+            for i in 0..n {
+                e[i] = d[i].abs();
+            }
+            sigma_used = quantile(&e[..n], 0.5) / 0.6745 / B3_NOISE[0];
         }
         let t = kj * sigma_used * B3_NOISE[j];
         let t2 = t * t;
@@ -197,14 +261,14 @@ pub fn wavelet_denoise(p: &mut [f32], w: usize, h: usize, sigma: Option<f32>, k:
             for i in 0..n {
                 e[i] = d[i] * d[i];
             }
-            box_blur(&mut e, w, h, 2.0);
+            crate::blur::box_blur_into(&mut e[..n], &mut tmp[..n], w, h, 2.0);
             for i in 0..n {
                 let energy = e[i];
                 let gain = if energy > t2 { (energy - t2) / energy } else { 0.0 };
                 out[i] += d[i] * gain;
             }
         }
-        std::mem::swap(&mut c, &mut next);
+        std::mem::swap(c, next);
     }
     for i in 0..n {
         p[i] = out[i] + c[i];
@@ -235,11 +299,12 @@ pub fn reduce(buf: &mut [u8], w: usize, h: usize, strength: f32, preserve_detail
     let base = strength / 5.0;
     let protect = 1.0 - 0.55 * preserve_details / 100.0;
     let luma_k = [base * protect, base * (0.5 + 0.5 * protect), base, base, base];
-    wavelet_denoise(&mut yp, w, h, None, luma_k);
+    let mut scratch = Scratch::new(n);
+    wavelet_denoise_with(&mut scratch, &mut yp, w, h, None, luma_k);
     let chroma = (0.5 + 3.0 * reduce_color / 100.0) * strength.max(2.0) / 5.0;
     let chroma_k = [chroma; LEVELS];
-    wavelet_denoise(&mut cb, w, h, None, chroma_k);
-    wavelet_denoise(&mut cr, w, h, None, chroma_k);
+    wavelet_denoise_with(&mut scratch, &mut cb, w, h, None, chroma_k);
+    wavelet_denoise_with(&mut scratch, &mut cr, w, h, None, chroma_k);
     for (i, px) in buf.chunks_exact_mut(4).enumerate() {
         let y = yp[i];
         let r = y + cr[i];

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Filter bench</title>
+    <style>
+      body { margin: 0; font: 13px ui-monospace, monospace; background: #15161c; color: #dcdee8; padding: 16px; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <pre id="out">loading the engine…</pre>
+    <script type="module">
+      // Times `filter.*` ops inside the wasm engine on a document of a given
+      // size, so the browser numbers line up with the native ones from
+      // `cargo run -p editor-filters --release --example bench`.
+      //
+      // The wasm binary is the release build `scripts/build-wasm.sh` produces
+      // (opt-level 3, simd128, wasm-opt -O3). The page around it is plain
+      // ESM: nothing it does is inside the measured window, which is one
+      // `Engine::exec` call per filter.
+      import init, { Engine } from "/src/wasm-gen/editor_wasm.js";
+
+      const out = document.getElementById("out");
+      const log = (s) => {
+        out.textContent += "\n" + s;
+        console.log(s);
+      };
+
+      let engine = null;
+      let source = null;
+      let W = 0;
+      let H = 0;
+
+      /** Decode `bytes` (a JPEG) and scale it to `w × h` RGBA. */
+      async function prepare(bytes, w, h) {
+        const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)]));
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        return new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer);
+      }
+
+      window.benchSetup = async (bytes, w, h) => {
+        await init();
+        engine = new Engine();
+        source = await prepare(bytes, w, h);
+        W = w;
+        H = h;
+        out.textContent = `engine ready, ${w} × ${h} (${((w * h) / 1e6).toFixed(1)} MP)`;
+        return { w, h };
+      };
+
+      /**
+       * Run one op on a fresh document and return the milliseconds
+       * `Engine::exec` took, the best of `reps`.
+       */
+      window.benchRun = (cmd, reps = 1) => {
+        let best = Infinity;
+        for (let i = 0; i < reps; i++) {
+          engine.exec(JSON.stringify({ op: "doc.open-pixels", width: W, height: H }), source);
+          const t = performance.now();
+          engine.exec(JSON.stringify(cmd), new Uint8Array());
+          best = Math.min(best, performance.now() - t);
+        }
+        log(`${cmd.op} ${(best / 1000).toFixed(3)} s`);
+        return best;
+      };
+    </script>
+  </body>
+</html>

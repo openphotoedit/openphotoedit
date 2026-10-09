@@ -10,7 +10,7 @@ runtime's own `.wasm` files (`ort/`).
 
 The rule for adding a model: its **weights** must permit commercial use and
 redistribution (the app is AGPL-3.0-or-later, and forks may be commercial).
-Check `docs/research/04-local-ai.md` §5 first. Non-commercial, research-only
+Non-commercial, research-only
 and revenue-capped weights are excluded, and so is anything built on them.
 
 ## Getting the files

@@ -107,10 +107,13 @@ export async function removeSelected(opts: { quality?: Quality } = {}): Promise<
   await job("Removing", "ai.remove", { quality: opts.quality ?? "auto" });
 }
 
-/** Cut the subject out: adds a layer mask from the subject to the active pixel layer. */
-export async function removeBackground(): Promise<void> {
+/**
+ * Cut the subject out: adds a layer mask from the subject to the active pixel layer.
+ * A selection limits the removal to it unless `inSelection` is false.
+ */
+export async function removeBackground(opts: { inSelection?: boolean } = {}): Promise<void> {
   needDocument();
-  await job("Removing the background", "ai.remove-background");
+  await job("Removing the background", "ai.remove-background", { inSelection: opts.inSelection ?? true });
 }
 
 /**

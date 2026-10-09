@@ -10,6 +10,7 @@ use crate::descriptor::{Descriptor, Value};
 use crate::error::Result;
 use crate::io::{Reader, Writer};
 use crate::kinds::{color_descriptor, descriptor_color, gradient_descriptor, gradient_kind_enum, read_gradient_stops};
+use crate::pattern::Patterns;
 
 const BLEND_ENUMS: [(BlendMode, &str); 27] = [
     (BlendMode::Normal, "Nrml"),
@@ -117,6 +118,9 @@ impl Obj<'_> {
             spread: self.f("Ckmt", def.spread),
             size: self.f("blur", def.size),
             source: if self.0.enum_value("glwS").as_deref() == Some("SrcC") { GlowSource::Center } else { GlowSource::Edge },
+            range: self.pct("Inpr", def.range),
+            // A gradient glow carries `Grad` where a solid one carries `Clr `.
+            stops: self.0.obj("Grad").filter(|g| g.enum_value("GrdF").as_deref() != Some("ClNs")).map(read_gradient_stops).unwrap_or_default(),
         }
     }
 }
@@ -126,12 +130,66 @@ fn first<'a>(d: &'a Descriptor, single: &str, multi: &str) -> Option<&'a Descrip
     d.obj(single).or_else(|| d.list(multi).and_then(|l| l.iter().find_map(Value::as_descriptor)))
 }
 
+/// The gradient keys shared by the gradient overlay and a gradient stroke:
+/// `Grad`, `Type`, `Angl`, `Scl `, `Rvrs` and `Ofst`. Blend, opacity and the
+/// enabled flag belong to the effect, not to the gradient, so they keep
+/// `def`'s values here.
+fn gradient(o: &Descriptor, def: &GradientOverlay) -> GradientOverlay {
+    GradientOverlay {
+        enabled: def.enabled,
+        blend: def.blend,
+        opacity: def.opacity,
+        stops: o.obj("Grad").map(read_gradient_stops).unwrap_or_else(|| def.stops.clone()),
+        gradient: match o.enum_value("Type").as_deref() {
+            Some("Rdl ") => GradientKind::Radial,
+            Some("Angl") => GradientKind::Angle,
+            Some("Rflc") => GradientKind::Reflected,
+            Some("Dmnd") => GradientKind::Diamond,
+            _ => GradientKind::Linear,
+        },
+        angle: o.num("Angl").map(|v| v as f32).unwrap_or(def.angle),
+        scale: o.num("Scl ").map(|v| v as f32).unwrap_or(def.scale),
+        reverse: o.boolean("Rvrs").unwrap_or(false),
+        offset: o.obj("Ofst").map(|q| (q.num("Hrzn").unwrap_or(0.0) as f32, q.num("Vrtc").unwrap_or(0.0) as f32)).unwrap_or(def.offset),
+    }
+}
+
+/// A `Ptrn` sub-descriptor (`Nm  ` and `Idnt`) plus the tiling keys beside
+/// it, resolved against the file's pattern library.
+fn pattern_overlay(o: &Descriptor, patterns: &Patterns, def: &PatternOverlay) -> (PatternOverlay, Option<String>) {
+    let p = o.obj("Ptrn");
+    let id = p.and_then(|p| p.text("Idnt")).unwrap_or_default().trim_end_matches('\0').to_string();
+    let name = p.and_then(|p| p.text("Nm  ")).unwrap_or_default().trim_end_matches('\0').to_string();
+    let image = patterns.get(&id).cloned();
+    let missing = if image.is_none() && !id.is_empty() { Some(id.clone()) } else { None };
+    let phase = o.obj("phase").map(|q| (q.num("Hrzn").unwrap_or(0.0) as f32, q.num("Vrtc").unwrap_or(0.0) as f32)).unwrap_or((0.0, 0.0));
+    (
+        PatternOverlay {
+            enabled: o.boolean("enab").unwrap_or(true),
+            blend: o.enum_value("Md  ").and_then(|s| blend_from_enum(&s)).unwrap_or(def.blend),
+            opacity: o.num("Opct").map(|v| v as f32 / 100.0).unwrap_or(def.opacity),
+            scale: o.num("Scl ").map(|v| v as f32).unwrap_or(def.scale),
+            angle: o.num("Angl").map(|v| v as f32).unwrap_or(def.angle),
+            phase,
+            // A pattern overlay says `Algn`; a pattern stroke says `Lnkd`.
+            linked: o.boolean("Algn").or_else(|| o.boolean("Lnkd")).unwrap_or(def.linked),
+            name,
+            id,
+            pattern: image,
+        },
+        missing,
+    )
+}
+
 /// Read `lfx2` / `lmfx` data (object effects version, then a descriptor).
-pub fn read(data: &[u8], light: GlobalLight) -> Result<(LayerEffects, Vec<String>)> {
+pub fn read(data: &[u8], light: GlobalLight, patterns: &Patterns) -> Result<(LayerEffects, Vec<String>)> {
     let mut r = Reader::new(data);
     let _version = r.u32()?;
     let d = Descriptor::read_versioned(&mut r)?;
-    let mut fx = LayerEffects { enabled: d.boolean("masterFXSwitch").unwrap_or(true), scale: d.num("Scl ").map(|v| v as f32 / 100.0).unwrap_or(1.0), ..Default::default() };
+    // `Scl ` is the document's resolution against 72 dpi (150 dpi files say
+    // 208.33), not a factor on the effect sizes: every size here is already
+    // in pixels, and Photoshop renders them at face value.
+    let mut fx = LayerEffects { enabled: d.boolean("masterFXSwitch").unwrap_or(true), scale: 1.0, ..Default::default() };
     let mut dropped = Vec::new();
     if let Some(o) = first(&d, "DrSh", "dropShadowMulti") {
         fx.drop_shadow = Some(Obj(o, light).shadow(&Shadow::default()));
@@ -200,30 +258,20 @@ pub fn read(data: &[u8], light: GlobalLight) -> Result<(LayerEffects, Vec<String
     if let Some(o) = first(&d, "GrFl", "gradientFillMulti") {
         let ob = Obj(o, light);
         let def = GradientOverlay::default();
-        fx.gradient_overlay = Some(GradientOverlay {
-            enabled: ob.enabled(),
-            blend: ob.blend("Md  ", def.blend),
-            opacity: ob.pct("Opct", def.opacity),
-            stops: o.obj("Grad").map(read_gradient_stops).unwrap_or(def.stops),
-            gradient: match o.enum_value("Type").as_deref() {
-                Some("Rdl ") => GradientKind::Radial,
-                Some("Angl") => GradientKind::Angle,
-                Some("Rflc") => GradientKind::Reflected,
-                Some("Dmnd") => GradientKind::Diamond,
-                _ => GradientKind::Linear,
-            },
-            angle: ob.f("Angl", def.angle),
-            scale: ob.f("Scl ", def.scale),
-            reverse: o.boolean("Rvrs").unwrap_or(false),
-        });
+        fx.gradient_overlay = Some(GradientOverlay { enabled: ob.enabled(), blend: ob.blend("Md  ", def.blend), opacity: ob.pct("Opct", def.opacity), ..gradient(o, &def) });
     }
-    if let Some(o) = first(&d, "FrFX", "frameFXMulti") {
+    // Photoshop can stack several strokes; every one of them draws.
+    let frames: Vec<&Descriptor> = match d.obj("FrFX") {
+        Some(o) => vec![o],
+        None => d.list("frameFXMulti").map(|l| l.iter().filter_map(Value::as_descriptor).collect()).unwrap_or_default(),
+    };
+    for o in frames {
         let ob = Obj(o, light);
         let def = StrokeEffect::default();
-        if o.enum_value("PntT").is_some_and(|p| p != "SClr") {
-            dropped.push("gradient or pattern stroke (drawn as a colour stroke)".to_string());
-        }
-        fx.stroke = Some(StrokeEffect {
+        // A stroke is painted with a colour, a gradient or a pattern; the
+        // gradient shares its geometry with the gradient overlay.
+        let paint = o.enum_value("PntT").unwrap_or_else(|| "SClr".into());
+        let mut stroke = StrokeEffect {
             enabled: ob.enabled(),
             size: ob.f("Sz  ", def.size),
             position: match o.enum_value("Styl").as_deref() {
@@ -234,12 +282,45 @@ pub fn read(data: &[u8], light: GlobalLight) -> Result<(LayerEffects, Vec<String
             blend: ob.blend("Md  ", def.blend),
             opacity: ob.pct("Opct", def.opacity),
             color: ob.color("Clr ", def.color),
-        });
+            gradient: None,
+            pattern: None,
+        };
+        match paint.as_str() {
+            // A noise gradient is generated from a seed, not from stops;
+            // there is nothing to interpolate, so keep the colour stroke.
+            "GrFl" if o.obj("Grad").and_then(|g| g.enum_value("GrdF")).as_deref() == Some("ClNs") => {
+                dropped.push("a noise-gradient stroke (drawn as a colour stroke)".to_string());
+            }
+            "GrFl" => stroke.gradient = Some(gradient(o, &GradientOverlay::default())),
+            "Ptrn" => {
+                let (p, missing) = pattern_overlay(o, patterns, &PatternOverlay::default());
+                if stroke.enabled && missing.is_some() {
+                    dropped.push("a pattern stroke whose pattern is not in this file (drawn as a colour stroke)".to_string());
+                }
+                if p.pattern.is_some() {
+                    stroke.pattern = Some(p);
+                }
+            }
+            _ => {}
+        }
+        if fx.stroke.is_none() {
+            fx.stroke = Some(stroke);
+        } else {
+            fx.extra_strokes.push(stroke);
+        }
     }
-    if d.obj("patternFill").is_some_and(|o| o.boolean("enab").unwrap_or(true)) {
-        dropped.push("pattern overlay".to_string());
+    if let Some(o) = first(&d, "patternFill", "patternFillMulti") {
+        let (p, missing) = pattern_overlay(o, patterns, &PatternOverlay::default());
+        if p.enabled && missing.is_some() {
+            dropped.push("a pattern overlay whose pattern is not in this file".to_string());
+        }
+        // Photoshop leaves a disabled patternFill on every layer it touches;
+        // only carry one that has pixels to draw or was actually switched on.
+        if p.enabled || p.pattern.is_some() {
+            fx.pattern_overlay = Some(if p.enabled { p } else { PatternOverlay { pattern: None, ..p } });
+        }
     }
-    for multi in ["dropShadowMulti", "innerShadowMulti", "solidFillMulti", "gradientFillMulti", "frameFXMulti"] {
+    for multi in ["dropShadowMulti", "innerShadowMulti", "solidFillMulti", "gradientFillMulti"] {
         if d.list(multi).is_some_and(|l| l.iter().filter(|v| v.as_descriptor().is_some_and(|o| o.boolean("enab").unwrap_or(true))).count() > 1) {
             dropped.push(format!("extra {} instances", multi.trim_end_matches("Multi")));
         }
@@ -264,6 +345,36 @@ fn px(v: f32) -> Value {
     Value::unit("#Pxl", v as f64)
 }
 
+/// The gradient keys, on a descriptor that already carries the effect's own
+/// enabled flag, blend and opacity.
+fn gradient_keys(o: Descriptor, g: &GradientOverlay) -> Descriptor {
+    o.with("Grad", Value::Descriptor(gradient_descriptor(&g.stops)))
+        .with("Angl", Value::unit("#Ang", g.angle as f64))
+        .with("Type", Value::enumv("GrdT", gradient_kind_enum(g.gradient)))
+        .with("Rvrs", Value::Bool(g.reverse))
+        .with("Dthr", Value::Bool(false))
+        .with("Algn", Value::Bool(true))
+        .with("Scl ", Value::unit("#Prc", g.scale as f64))
+        .with("Ofst", Value::Descriptor(Descriptor::new("Pnt ").with("Hrzn", Value::unit("#Prc", g.offset.0 as f64)).with("Vrtc", Value::unit("#Prc", g.offset.1 as f64))))
+}
+
+/// The pattern keys. The pixels stay in the file's `Patt` resource, which
+/// import keeps and export writes back; here we only name the pattern again.
+/// `link_key` is `Algn` for an overlay and `Lnkd` for a stroke.
+fn pattern_keys(o: Descriptor, p: &PatternOverlay, link_key: &str) -> Descriptor {
+    let mut o = o
+        .with("Scl ", Value::unit("#Prc", p.scale as f64))
+        .with(link_key, Value::Bool(p.linked))
+        .with("phase", Value::Descriptor(Descriptor::new("Pnt ").with("Hrzn", Value::Double(p.phase.0 as f64)).with("Vrtc", Value::Double(p.phase.1 as f64))));
+    if !p.id.is_empty() {
+        o.set("Ptrn", Value::Descriptor(Descriptor::new("Ptrn").with("Nm  ", Value::text(&p.name)).with("Idnt", Value::text(&p.id))));
+    }
+    if p.angle != 0.0 {
+        o.set("Angl", Value::unit("#Ang", p.angle as f64));
+    }
+    o
+}
+
 /// Write `lfx2` data for these effects.
 pub fn write(fx: &LayerEffects) -> Vec<u8> {
     let mut d = Descriptor::new("null").with("Scl ", Value::unit("#Prc", (fx.scale * 100.0) as f64)).with("masterFXSwitch", Value::Bool(fx.enabled));
@@ -281,8 +392,13 @@ pub fn write(fx: &LayerEffects) -> Vec<u8> {
             .with("layerConceals", Value::Bool(true))
     };
     let glow = |g: &Glow, class: &str, inner: bool| {
-        let mut o = common(Descriptor::new(class), g.enabled, g.blend, g.opacity)
-            .with("Clr ", color_descriptor(g.color))
+        let mut o = common(Descriptor::new(class), g.enabled, g.blend, g.opacity);
+        if g.stops.is_empty() {
+            o.set("Clr ", color_descriptor(g.color));
+        } else {
+            o.set("Grad", Value::Descriptor(gradient_descriptor(&g.stops)));
+        }
+        let mut o = o
             .with("GlwT", Value::enumv("BETE", "SfBL"))
             .with("Ckmt", px(g.spread))
             .with("blur", px(g.size))
@@ -290,7 +406,7 @@ pub fn write(fx: &LayerEffects) -> Vec<u8> {
             .with("ShdN", Value::unit("#Prc", 0.0))
             .with("AntA", Value::Bool(false))
             .with("TrnS", contour())
-            .with("Inpr", Value::unit("#Prc", 50.0));
+            .with("Inpr", Value::unit("#Prc", (g.range * 100.0) as f64));
         if inner {
             o.set("glwS", Value::enumv("IGSr", if g.source == GlowSource::Center { "SrcC" } else { "SrcE" }));
         }
@@ -349,15 +465,7 @@ pub fn write(fx: &LayerEffects) -> Vec<u8> {
         d.set("SoFi", Value::Descriptor(common(Descriptor::new("SoFi"), c.enabled, c.blend, c.opacity).with("Clr ", color_descriptor(c.color))));
     }
     if let Some(g) = &fx.gradient_overlay {
-        let o = common(Descriptor::new("GrFl"), g.enabled, g.blend, g.opacity)
-            .with("Grad", Value::Descriptor(gradient_descriptor(&g.stops)))
-            .with("Angl", Value::unit("#Ang", g.angle as f64))
-            .with("Type", Value::enumv("GrdT", gradient_kind_enum(g.gradient)))
-            .with("Rvrs", Value::Bool(g.reverse))
-            .with("Dthr", Value::Bool(false))
-            .with("Algn", Value::Bool(true))
-            .with("Scl ", Value::unit("#Prc", g.scale as f64))
-            .with("Ofst", Value::Descriptor(Descriptor::new("Pnt ").with("Hrzn", Value::unit("#Prc", 0.0)).with("Vrtc", Value::unit("#Prc", 0.0))));
+        let o = gradient_keys(common(Descriptor::new("GrFl"), g.enabled, g.blend, g.opacity), g);
         d.set("GrFl", Value::Descriptor(o));
     }
     if let Some(s) = &fx.satin {
@@ -371,7 +479,11 @@ pub fn write(fx: &LayerEffects) -> Vec<u8> {
             .with("MpgS", contour());
         d.set("ChFX", Value::Descriptor(o));
     }
-    if let Some(s) = &fx.stroke {
+    if let Some(p) = &fx.pattern_overlay {
+        let o = pattern_keys(common(Descriptor::new("patternFill"), p.enabled, p.blend, p.opacity), p, "Algn");
+        d.set("patternFill", Value::Descriptor(o));
+    }
+    for (n, s) in fx.stroke.iter().chain(fx.extra_strokes.iter()).enumerate() {
         let o = Descriptor::new("FrFX")
             .with("enab", Value::Bool(s.enabled))
             .with("present", Value::Bool(true))
@@ -387,12 +499,33 @@ pub fn write(fx: &LayerEffects) -> Vec<u8> {
                     },
                 ),
             )
-            .with("PntT", Value::enumv("FrFl", "SClr"))
+            .with("PntT", Value::enumv("FrFl", if s.gradient.is_some() { "GrFl" } else if s.pattern.is_some() { "Ptrn" } else { "SClr" }))
             .with("Md  ", blend_enum(s.blend))
             .with("Opct", Value::unit("#Prc", (s.opacity * 100.0) as f64))
             .with("Sz  ", px(s.size))
             .with("Clr ", color_descriptor(s.color));
-        d.set("FrFX", Value::Descriptor(o));
+        let o = match (&s.gradient, &s.pattern) {
+            (Some(g), _) => gradient_keys(o, g),
+            (None, Some(p)) => pattern_keys(o, p, "Lnkd"),
+            _ => o,
+        };
+        // One stroke goes in `FrFX`; a stack goes in `frameFXMulti`, which
+        // is where Photoshop itself writes more than one.
+        if fx.extra_strokes.is_empty() {
+            d.set("FrFX", Value::Descriptor(o));
+        } else {
+            match d.get("frameFXMulti") {
+                Some(Value::List(l)) => {
+                    let mut l = l.clone();
+                    l.push(Value::Descriptor(o));
+                    d.set("frameFXMulti", Value::List(l));
+                }
+                _ => {
+                    debug_assert_eq!(n, 0);
+                    d.set("frameFXMulti", Value::List(vec![Value::Descriptor(o)]));
+                }
+            }
+        }
     }
     let mut w = Writer::new();
     w.u32(0);
@@ -416,11 +549,36 @@ mod tests {
             satin: Some(Satin::default()),
             gradient_overlay: Some(GradientOverlay { stops: GradientOverlay::default().stops, ..Default::default() }),
             inner_shadow: Some(Shadow { blend: BlendMode::Multiply, ..Default::default() }),
+            pattern_overlay: Some(PatternOverlay {
+                enabled: true,
+                blend: BlendMode::Multiply,
+                opacity: 0.5,
+                scale: 81.0,
+                angle: 30.0,
+                phase: (3.0, -4.0),
+                linked: false,
+                name: "Tie Dye".into(),
+                id: "1b29876b-58b7-11d4-b895-a898787104c1".into(),
+                pattern: Some(PatternImage { width: 1, height: 1, rgba: vec![1, 2, 3, 4] }),
+            }),
             ..Default::default()
         };
         let bytes = write(&fx);
-        let (back, dropped) = read(&bytes, GlobalLight::default()).unwrap();
-        assert!(dropped.is_empty());
+        let mut pats = Patterns::new();
+        pats.insert("1b29876b-58b7-11d4-b895-a898787104c1".into(), PatternImage { width: 1, height: 1, rgba: vec![1, 2, 3, 4] });
+        let (back, dropped) = read(&bytes, GlobalLight::default(), &pats).unwrap();
+        assert!(dropped.is_empty(), "{dropped:?}");
         assert_eq!(back, fx);
+    }
+
+    #[test]
+    fn a_pattern_overlay_naming_a_pattern_the_file_does_not_have_is_reported() {
+        let fx = LayerEffects {
+            pattern_overlay: Some(PatternOverlay { id: "missing".into(), ..Default::default() }),
+            ..Default::default()
+        };
+        let (back, dropped) = read(&write(&fx), GlobalLight::default(), &Patterns::new()).unwrap();
+        assert_eq!(dropped.len(), 1);
+        assert!(back.pattern_overlay.is_some_and(|p| p.pattern.is_none()));
     }
 }

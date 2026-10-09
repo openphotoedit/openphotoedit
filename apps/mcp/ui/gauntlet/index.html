@@ -1,0 +1,1918 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Photoshop gauntlet — OpenPhotoEdit</title>
+<link rel="icon" href="data:,">
+
+<!--
+  The Photoshop gauntlet — a live scoreboard for apps/mcp's PSD composite test.
+
+  269 real Photoshop files are opened by our engine, flattened, and the result
+  compared pixel-for-pixel against the composite Adobe's own software wrote
+  into the same file. This page watches that happen.
+
+  Feed: an AG-UI event stream (https://docs.ag-ui.com) over SSE from the same
+  origin. RunStarted, a StateSnapshot, a StateDelta (RFC 6902 JSON Patch) per
+  file, StepStarted/StepFinished per phase, then RunFinished or RunError.
+  Event names are matched case- and separator-insensitively, so RUN_STARTED,
+  RunStarted and run_started all land in the same place.
+
+  The state shape it reads is written out in NOTES.md beside this file.
+
+  Constraints, same as apps/mcp/ui/viewer.html: one self-contained file, no
+  CDN, no external font, nothing but data: URIs for pixels, so it survives a
+  strict CSP (default-src 'none'; script-src 'self' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self').
+
+  Style: OpenApps design system. Every token below is copied verbatim from
+  apps/mcp/ui/viewer.html, which in turn took them from
+  apps/web/src/vendor/tokens/css/*. OpenPhotoEdit holds accent slot 24, iris.
+  The only additions are the seven verdict colours, and each is a brand hex.
+
+  Verified by replay-harness.mjs beside this file.
+-->
+<style>
+/* ---------------------------------------------------------------- tokens */
+:root {
+  --white: #ffffff;
+  --black: #000000;
+  --blue: #15b9eb;
+  --green: #00c896;
+  --red: #ff4d4d;
+  --orange: #ff8c42;
+  --violet: #8c6cff;
+  --gray-050: #f8f8f7;
+  --gray-100: #f0f0ee;
+  --gray-200: #deded9;
+  --gray-300: #c1c0b8;
+  --gray-400: #989898;
+  --gray-500: #7c7c7c;
+  --gray-600: #656565;
+  --gray-800: #3d3d3d;
+  --gray-900: #282828;
+  --gray-950: #1a1a1a;
+  --white-04: rgba(255,255,255,0.04);
+  --white-10: rgba(255,255,255,0.1);
+  --white-20: rgba(255,255,255,0.2);
+  --white-50: rgba(255,255,255,0.5);
+  --white-60: rgba(255,255,255,0.6);
+  --white-70: rgba(255,255,255,0.7);
+  --black-04: rgba(0,0,0,0.04);
+  --black-10: rgba(0,0,0,0.1);
+  --black-30: rgba(0,0,0,0.3);
+  --black-50: rgba(0,0,0,0.5);
+  --color-font: #020202;
+  --color-background: #f2f2f2;
+  --color-background-alt: #111111;
+
+  --green-50: color-mix(in oklab, var(--green) 10%, var(--white));
+  --green-400: color-mix(in oklab, var(--green) 78%, var(--white));
+  --green-600: color-mix(in oklab, var(--green) 88%, var(--black));
+  --green-700: color-mix(in oklab, var(--green) 72%, var(--black));
+  --red-100: color-mix(in oklab, var(--red) 14%, var(--white));
+  --red-600: color-mix(in oklab, var(--red) 78%, var(--black));
+  --orange-100: color-mix(in oklab, var(--orange) 16%, var(--white));
+  --orange-600: color-mix(in oklab, var(--orange) 68%, var(--black));
+  --blue-600: color-mix(in oklab, var(--blue) 74%, var(--black));
+  --violet-600: color-mix(in oklab, var(--violet) 80%, var(--black));
+
+  /* accent slot 24 — iris */
+  --ink: color-mix(in oklab, var(--blue) 54%, var(--black) 46%);
+  --iris: color-mix(in oklab, var(--violet) 56%, var(--ink));
+  --accent: var(--iris);
+  --accent-tint: color-mix(in oklab, var(--iris) 16%, transparent);
+
+  --bg-page: var(--color-background);
+  --bg-subtle: var(--gray-050);
+  --bg-sunken: var(--gray-100);
+  --surface-card: var(--white);
+  --surface-raised: var(--white);
+  --surface-hover: var(--black-04);
+  --surface-active: var(--gray-100);
+  --text-strong: var(--color-font);
+  --text-body: var(--gray-800);
+  --text-muted: var(--gray-600);
+  --text-faint: color-mix(in oklab, var(--gray-500) 30%, var(--gray-600));
+  --border-hairline: var(--gray-200);
+  --border-strong: var(--gray-300);
+  --brand: var(--green);
+  --brand-contrast: var(--black);
+  --brand-soft: var(--green-50);
+  --text-brand: var(--green-700);
+  --success-fg: var(--green-700);
+  --danger-fg: var(--red-600);
+  --danger-bg: var(--red-100);
+  --warning-fg: var(--orange-600);
+  --warning-bg: var(--orange-100);
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--color-font);
+
+  --pasteboard: var(--gray-200);
+  --checker-a: var(--white);
+  --checker-b: var(--gray-100);
+
+  /* the seven verdicts. one hue each, brand hexes only, and they keep the
+     same hue in both themes so the rail reads the same on a projector. */
+  --v-exact:        var(--green);
+  --v-within1:      color-mix(in oklab, var(--green) 58%, var(--blue));
+  --v-within3:      var(--blue);
+  --v-within10:     var(--orange);
+  --v-over:         var(--red);
+  --v-structureOnly:var(--violet);
+  --v-failed:       color-mix(in oklab, var(--red) 58%, var(--black));
+  /* readable text colour on each of those as a solid chip */
+  --vi-exact: var(--black);        --vi-within1: var(--black);
+  --vi-within3: var(--black);      --vi-within10: var(--black);
+  --vi-over: var(--white);         --vi-structureOnly: var(--white);
+  --vi-failed: var(--white);
+  /* the same seven as readable *text* on the page background */
+  --vt-exact: var(--green-700);    --vt-within1: color-mix(in oklab, var(--green-700) 60%, var(--blue-600));
+  --vt-within3: var(--blue-600);   --vt-within10: var(--orange-600);
+  --vt-over: var(--red-600);       --vt-structureOnly: var(--violet-600);
+  --vt-failed: color-mix(in oklab, var(--red) 62%, var(--black));
+
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-2xs: 11px; --text-xs: 12px; --text-sm: 13px; --text-base: 15px;
+  --text-lg: 20px; --text-xl: 26px; --text-2xl: 38px;
+  --weight-regular: 400; --weight-medium: 500;
+  --tracking-body: -0.005em; --tracking-caps: 0.08em; --tracking-heading: -0.02em;
+  --type-body: var(--weight-regular) var(--text-base)/1.45 var(--font-sans);
+  --type-ui: var(--weight-medium) var(--text-sm)/1.3 var(--font-sans);
+  --type-caption: var(--weight-regular) var(--text-xs)/1.35 var(--font-sans);
+  --type-mono: var(--weight-regular) var(--text-sm)/1.5 var(--font-mono);
+  --type-label: var(--weight-medium) var(--text-2xs)/1.2 var(--font-sans);
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --control-h-sm: 28px; --control-h-md: 34px;
+  --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+  --radius-full: 999px; --border-width: 1px;
+  --shadow-xs: 0 1px 1px var(--black-04);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 1px 1px var(--black-04);
+  --shadow-md: 0 2px 4px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.08);
+  --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 300ms;
+  --ease-standard: cubic-bezier(0.2,0,0,1);
+  --ease-out: cubic-bezier(0.16,1,0.3,1);
+  --transition-control:
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-page: var(--color-background-alt);
+    --bg-subtle: var(--gray-950);
+    --bg-sunken: var(--black);
+    --surface-card: var(--gray-950);
+    --surface-raised: var(--gray-900);
+    --surface-hover: var(--white-04);
+    --surface-active: var(--white-10);
+    --text-strong: var(--white);
+    --text-body: var(--white-70);
+    --text-muted: var(--white-60);
+    --text-faint: var(--white-50);
+    --border-hairline: var(--white-10);
+    --border-strong: var(--white-20);
+    --brand-soft: color-mix(in oklab, var(--green) 20%, transparent);
+    --text-brand: var(--green);
+    --success-fg: var(--green);
+    --danger-fg: var(--red);
+    --danger-bg: color-mix(in oklab, var(--red) 20%, transparent);
+    --warning-fg: var(--orange);
+    --warning-bg: color-mix(in oklab, var(--orange) 20%, transparent);
+    --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--green);
+    --pasteboard: #0b0b0b;
+    --checker-a: var(--gray-900);
+    --checker-b: var(--gray-950);
+    --shadow-lg: 0 8px 28px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.5);
+    --vt-exact: var(--green);        --vt-within1: color-mix(in oklab, var(--green) 58%, var(--blue));
+    --vt-within3: var(--blue);       --vt-within10: var(--orange);
+    --vt-over: var(--red);           --vt-structureOnly: var(--violet);
+    --vt-failed: color-mix(in oklab, var(--red) 66%, var(--gray-200));
+  }
+}
+:root[data-theme="dark"] {
+  --bg-page: var(--color-background-alt);
+  --bg-subtle: var(--gray-950);
+  --bg-sunken: var(--black);
+  --surface-card: var(--gray-950);
+  --surface-raised: var(--gray-900);
+  --surface-hover: var(--white-04);
+  --surface-active: var(--white-10);
+  --text-strong: var(--white);
+  --text-body: var(--white-70);
+  --text-muted: var(--white-60);
+  --text-faint: var(--white-50);
+  --border-hairline: var(--white-10);
+  --border-strong: var(--white-20);
+  --brand-soft: color-mix(in oklab, var(--green) 20%, transparent);
+  --text-brand: var(--green);
+  --success-fg: var(--green);
+  --danger-fg: var(--red);
+  --danger-bg: color-mix(in oklab, var(--red) 20%, transparent);
+  --warning-fg: var(--orange);
+  --warning-bg: color-mix(in oklab, var(--orange) 20%, transparent);
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--green);
+  --pasteboard: #0b0b0b;
+  --checker-a: var(--gray-900);
+  --checker-b: var(--gray-950);
+  --shadow-lg: 0 8px 28px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.5);
+  --vt-exact: var(--green);        --vt-within1: color-mix(in oklab, var(--green) 58%, var(--blue));
+  --vt-within3: var(--blue);       --vt-within10: var(--orange);
+  --vt-over: var(--red);           --vt-structureOnly: var(--violet);
+  --vt-failed: var(--gray-400);
+}
+
+/* a projector is big and far away: everything grows one notch past 1500px */
+@media (min-width: 1500px) {
+  :root {
+    --text-2xs: 12px; --text-xs: 13px; --text-sm: 15px; --text-base: 17px;
+    --text-lg: 24px; --text-xl: 32px; --text-2xl: 52px;
+    --control-h-sm: 32px; --control-h-md: 38px;
+  }
+}
+
+/* ------------------------------------------------------------------ base */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg-page);
+  color: var(--text-body);
+  font: var(--type-body);
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+button, input { font: inherit; letter-spacing: inherit; color: inherit; }
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+svg { display: block; }
+[hidden] { display: none !important; }
+.sr { position: absolute !important; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  :root { --duration-fast: 0ms; --duration-base: 0ms; --duration-slow: 0ms; }
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* --------------------------------------------------------------- buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--control-h-sm); padding: 0 10px;
+  font: var(--weight-medium) var(--text-sm)/1 var(--font-sans);
+  letter-spacing: var(--tracking-body);
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid transparent;
+  background: transparent; color: var(--text-body);
+  cursor: pointer; white-space: nowrap; user-select: none;
+  transition: var(--transition-control);
+}
+.btn:active:not(:disabled) { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn--primary { background: var(--brand); color: var(--brand-contrast); }
+.btn--primary:hover:not(:disabled) { background: var(--green-400); }
+.btn--primary:active:not(:disabled) { background: var(--green-600); }
+.btn--secondary {
+  background: var(--surface-card); color: var(--text-strong);
+  border-color: var(--border-strong); box-shadow: var(--shadow-xs);
+}
+.btn--secondary:hover:not(:disabled) { background: var(--surface-hover); }
+.btn--secondary:active:not(:disabled) { background: var(--surface-active); }
+.btn--ghost:hover:not(:disabled) { background: var(--surface-hover); }
+.btn--lg { height: var(--control-h-md); padding: 0 16px; font-size: var(--text-base); }
+.seg {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  background: var(--bg-sunken); border-radius: var(--radius-md);
+}
+.seg .btn {
+  height: calc(var(--control-h-sm) - 6px); padding: 0 8px;
+  border-radius: var(--radius-sm); color: var(--text-muted); font-size: var(--text-xs);
+}
+.seg .btn[aria-pressed="true"] {
+  background: var(--surface-card); color: var(--text-strong); box-shadow: var(--shadow-xs);
+}
+.field {
+  height: var(--control-h-sm); min-width: 0; width: 150px; padding: 0 9px;
+  background: var(--surface-card); color: var(--text-strong);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-xs);
+  font: var(--weight-regular) var(--text-xs)/1 var(--font-mono);
+  transition: var(--transition-control);
+}
+.field::placeholder { color: var(--text-faint); }
+.label {
+  font: var(--type-label); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------- layout */
+.app {
+  display: grid; min-height: 100dvh;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "bar" "note" "rail" "stage" "side" "status";
+}
+@media (min-width: 900px) {
+  .app {
+    height: 100dvh; overflow: hidden;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 24vw, 420px);
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "bar bar" "note note" "rail rail" "stage side" "status status";
+  }
+}
+
+/* ------------------------------------------------------------------- bar */
+.bar {
+  grid-area: bar; display: flex; align-items: center; gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-card);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+  min-height: 48px;
+}
+.ident { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+       flex: 0 0 auto; align-self: center; }
+.ident h1 {
+  margin: 0; font: var(--weight-medium) var(--text-base)/1.2 var(--font-sans);
+  letter-spacing: var(--tracking-heading); color: var(--text-strong); white-space: nowrap;
+}
+.ident .sub { font: var(--type-caption); color: var(--text-faint); }
+@media (max-width: 1099px) { .ident .sub { display: none; } }
+.grow { flex: 1 1 auto; min-width: 4px; }
+.controls { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+.conn {
+  display: inline-flex; align-items: center; gap: 6px; height: var(--control-h-sm);
+  padding: 0 10px; border-radius: var(--radius-full);
+  background: var(--bg-sunken); border: var(--border-width) solid transparent;
+  font: var(--weight-medium) var(--text-2xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--text-faint); white-space: nowrap;
+  transition: var(--transition-control);
+}
+.conn i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.conn[data-c="live"] { color: var(--success-fg); background: var(--brand-soft); }
+.conn[data-c="live"] i { animation: pulse 1.6s var(--ease-standard) infinite; }
+.conn[data-c="retry"] { color: var(--warning-fg); background: var(--warning-bg); }
+.conn[data-c="retry"] i { animation: pulse 700ms linear infinite; }
+.conn[data-c="lost"],
+.conn[data-c="stopped"] { color: var(--danger-fg); background: var(--danger-bg); }
+.conn[data-c="done"] { color: var(--text-muted); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* ------------------------------------------------------------------ rail */
+.railwrap {
+  grid-area: rail; background: var(--surface-card);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.phases { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.phase {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: var(--type-label); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--text-faint);
+  transition: color var(--duration-base) var(--ease-standard);
+}
+.phase b { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong);
+           transition: var(--transition-control); }
+.phase[data-on="past"] { color: var(--text-muted); }
+.phase[data-on="past"] b { background: var(--text-muted); }
+.phase[data-on="now"] { color: var(--accent); }
+.phase[data-on="now"] b { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+.phases .sep { width: 12px; height: 1px; background: var(--border-hairline); }
+.phases .right { margin-left: auto; font: var(--weight-regular) var(--text-2xs)/1 var(--font-mono);
+                 color: var(--text-faint); font-variant-numeric: tabular-nums; text-transform: none;
+                 letter-spacing: 0; }
+
+.rail {
+  position: relative; display: flex; gap: 1px; height: 14px;
+  background: var(--bg-sunken); border-radius: var(--radius-xs); overflow: hidden;
+  padding: 0;
+}
+.rail .t {
+  flex: 1 1 0; min-width: 0; background: transparent;
+  transition: background-color var(--duration-base) var(--ease-standard);
+}
+.rail .t[data-v] { background: var(--tick, var(--border-strong)); }
+.rail .t.now { box-shadow: inset 0 -4px 0 var(--text-strong), inset 0 4px 0 var(--text-strong); }
+.runline {
+  margin: 0; font: var(--type-caption); color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--black-10); border-radius: var(--radius-xs);
+}
+
+/* ----------------------------------------------------------------- stage */
+.stage {
+  grid-area: stage; position: relative; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-page);
+  padding: var(--space-4);
+  gap: var(--space-3);
+}
+@media (min-width: 900px) { .stage { overflow: hidden; } }
+/* on a phone the stage is only as tall as its content, and an overlay card
+   would be clipped at the fold — give it somewhere to stand, but only while
+   there is a card, or a live run would carry a hole under the triptych */
+@media (max-width: 899px) {
+  .app[data-state="idle"] .stage,
+  .app[data-state="connecting"] .stage,
+  .app[data-state="empty"] .stage,
+  .app[data-state="error"] .stage,
+  .app[data-state="done"] .stage { min-height: 0; }
+}
+/* the summary is the one card too tall for a phone screen: put it in the
+   flow and let the page scroll rather than clipping its buttons away */
+@media (max-width: 899px) {
+  .app[data-state="done"] .veil {
+    position: static; background: none;
+    -webkit-backdrop-filter: none; backdrop-filter: none; padding: 0;
+  }
+  .app[data-state="done"] .card { max-height: none; }
+}
+
+.triptych {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: var(--space-3); min-height: 0; flex: 1 1 auto;
+  --ar: 4 / 3;   /* replaced per file from the state's width and height */
+}
+@media (max-width: 899px) { .triptych { gap: var(--space-2); flex: 0 0 auto; } }
+.panel { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+.panel > .cap {
+  display: flex; align-items: center; gap: 6px; min-height: 18px; min-width: 0;
+  overflow: hidden;
+  font: var(--type-label); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--text-muted);
+}
+.panel > .cap { height: 26px; }
+.panel > .cap > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 779px) { .panel > .cap .sub2 { display: none; } }
+.panel > .cap .seg { flex: 0 0 auto; overflow: visible; }
+/* a third of a phone's width has no room for a gain control */
+@media (max-width: 779px) { .panel > .cap .seg { display: none; } }
+.panel > .cap .who { color: var(--text-strong); }
+.panel > .cap .grow { min-width: 2px; }
+.panel--diff > .cap { color: var(--text-faint); }
+
+.plate {
+  position: relative; flex: 0 1 auto; width: 100%;
+  aspect-ratio: var(--ar, 4 / 3); max-height: min(100%, 62vh);
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid var(--border-hairline);
+  background-color: var(--checker-a);
+  background-image:
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%, transparent 75%, var(--checker-b) 75%),
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%, transparent 75%, var(--checker-b) 75%);
+  background-size: 16px 16px; background-position: 0 0, 8px 8px;
+  overflow: hidden; box-shadow: var(--shadow-sm);
+}
+.panel--diff .plate { background: var(--black); }
+.panel--diff .plate.empty { background: var(--bg-sunken); }
+.plate img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block; opacity: 0;
+  -webkit-user-drag: none; user-select: none; pointer-events: none;
+  transform: scale(1.015);
+  transition: opacity var(--duration-slow) var(--ease-out),
+              transform 420ms var(--ease-out);
+}
+.plate img.on { opacity: 1; transform: scale(1); }
+.plate.empty::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(135deg, transparent 0 9px, var(--black-04) 9px 10px);
+}
+.pnote {
+  position: absolute; inset: 0; z-index: 2;
+  display: grid; place-items: center; text-align: center; padding: var(--space-3);
+  font: var(--type-label); letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--text-faint); pointer-events: none;
+}
+.plate:not(.empty) .pnote, .pnote:empty { display: none; }
+
+/* the readout under the triptych */
+.meta {
+  flex: 0 0 auto; display: grid; gap: var(--space-2) var(--space-4);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  padding-top: var(--space-1);
+  border-top: var(--border-width) solid var(--border-hairline);
+}
+@media (max-width: 599px) { .meta { grid-template-columns: minmax(0,1fr); } }
+.fname {
+  margin: 0; min-width: 0;
+  font: var(--weight-medium) var(--text-lg)/1.15 var(--font-sans);
+  letter-spacing: var(--tracking-heading); color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fname .dir { color: var(--text-faint); font-weight: var(--weight-regular); }
+.fmeta {
+  margin-top: 3px;
+  font: var(--weight-regular) var(--text-xs)/1.4 var(--font-mono);
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.fmeta i { font-style: normal; color: var(--text-faint); }
+.verdictbox { display: flex; align-items: center; gap: var(--space-3); justify-self: end;
+               flex-wrap: wrap; min-width: 0; max-width: 100%; }
+@media (max-width: 599px) { .verdictbox { justify-self: start; } }
+.chip {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 11px;
+  border-radius: var(--radius-full);
+  font: var(--weight-medium) var(--text-xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  background: var(--bg-sunken); color: var(--text-faint); white-space: nowrap;
+  min-width: 0; max-width: 100%; overflow: hidden;
+  transition: background-color var(--duration-base) var(--ease-standard),
+              color var(--duration-base) var(--ease-standard);
+}
+.chip[data-v] { background: var(--vbg); color: var(--vink); }
+.chip .blurb { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 719px) { .chip .blurb { display: none; } }
+.err {
+  text-align: right; font: var(--weight-regular) var(--text-2xs)/1.3 var(--font-sans);
+  color: var(--text-faint); letter-spacing: var(--tracking-caps); text-transform: uppercase;
+}
+.err b small { font: var(--weight-regular) var(--text-xs)/1 var(--font-mono); color: var(--text-faint); }
+.err b {
+  display: block; font: var(--weight-medium) var(--text-xl)/1 var(--font-mono);
+  letter-spacing: -0.01em; color: var(--vtext, var(--text-strong));
+  font-variant-numeric: tabular-nums; text-transform: none;
+}
+@media (max-width: 599px) { .err { text-align: left; } }
+
+/* ------------------------------------------------------------- overlays */
+.veil {
+  position: absolute; inset: 0; z-index: 5;
+  display: grid; place-items: center; padding: var(--space-4);
+  background: color-mix(in oklab, var(--bg-page) 86%, transparent);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  animation: veilin var(--duration-slow) var(--ease-out);
+}
+@keyframes veilin { from { opacity: 0; } to { opacity: 1; } }
+.card {
+  width: min(760px, 100%); max-height: 100%; overflow: auto;
+  background: var(--surface-card);
+  border: var(--border-width) solid var(--border-hairline);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  padding: var(--space-6);
+}
+@media (min-width: 1500px) { .card { width: min(1000px, 100%); padding: var(--space-8); } }
+.card h2 {
+  margin: 0 0 var(--space-2);
+  font: var(--weight-medium) var(--text-xl)/1.15 var(--font-sans);
+  letter-spacing: var(--tracking-heading); color: var(--text-strong);
+}
+.card p { margin: 0 0 var(--space-4); font: var(--type-caption); color: var(--text-muted);
+          max-width: 62ch; font-size: var(--text-sm); }
+.card .row { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-5); }
+.card .eyebrow {
+  font: var(--type-label); letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--accent); margin-bottom: var(--space-2);
+}
+.card--bad .eyebrow { color: var(--danger-fg); }
+
+.headline {
+  margin: 0 0 var(--space-4);
+  font: var(--weight-regular) var(--text-lg)/1.3 var(--font-sans);
+  letter-spacing: var(--tracking-heading); color: var(--text-body);
+}
+.headline b { color: var(--text-strong); font-weight: var(--weight-medium); }
+
+.facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3); margin: var(--space-4) 0;
+  padding: var(--space-4) 0; border-top: var(--border-width) solid var(--border-hairline);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+}
+.fact .k { font: var(--type-label); letter-spacing: var(--tracking-caps);
+           text-transform: uppercase; color: var(--text-faint); }
+.fact .v { margin-top: 3px; font: var(--weight-medium) var(--text-lg)/1.1 var(--font-mono);
+           color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.fact .v small { display: block; margin-top: 2px;
+           font: var(--weight-regular) var(--text-xs)/1.3 var(--font-mono); color: var(--text-faint);
+           word-break: normal; overflow-wrap: anywhere; }
+
+/* the honest stacked bar */
+.stack { display: flex; height: 22px; border-radius: var(--radius-xs); overflow: hidden;
+         background: var(--bg-sunken); }
+.stack span { display: block; transition: width var(--duration-slow) var(--ease-out); }
+.stackkey { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin-top: var(--space-3); }
+.stackkey div { display: flex; align-items: baseline; gap: 6px;
+                font: var(--weight-regular) var(--text-xs)/1.4 var(--font-sans); color: var(--text-muted); }
+.stackkey i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; align-self: center; }
+.stackkey b { color: var(--text-strong); font-weight: var(--weight-medium);
+              font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ side */
+.side {
+  grid-area: side; min-height: 0; min-width: 0; overflow: auto;
+  background: var(--bg-subtle);
+  border-top: var(--border-width) solid var(--border-hairline);
+  display: flex; flex-direction: column;
+}
+@media (min-width: 900px) {
+  .side { border-top: 0; border-left: var(--border-width) solid var(--border-hairline); }
+}
+.box { flex: 0 0 auto; padding: var(--space-3) var(--space-4) var(--space-4);
+       border-bottom: var(--border-width) solid var(--border-hairline); }
+.box > h3 {
+  display: flex; align-items: baseline; gap: var(--space-2); margin: 0 0 var(--space-3);
+  font: var(--type-label); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--text-faint);
+}
+.box > h3 .n { margin-left: auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* scoreboard */
+.score { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--space-2); }
+.sc {
+  display: flex; align-items: baseline; gap: var(--space-2);
+  padding: 7px var(--space-2) 7px 9px; border-radius: var(--radius-sm);
+  background: var(--surface-card); border: var(--border-width) solid var(--border-hairline);
+  position: relative; overflow: hidden;
+}
+.sc::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+              background: var(--vbg, var(--border-strong)); }
+.sc .k { font: var(--weight-regular) var(--text-2xs)/1.2 var(--font-sans); color: var(--text-muted);
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc .v { margin-left: auto; font: var(--weight-medium) var(--text-base)/1 var(--font-mono);
+         color: var(--vtext, var(--text-strong)); font-variant-numeric: tabular-nums; }
+.sc[data-zero="1"] .v { color: var(--text-faint); }
+
+/* histogram */
+.hist {
+  display: flex; align-items: flex-end; gap: 1px; height: 86px;
+  padding: 0; background: var(--bg-sunken); border-radius: var(--radius-sm);
+  border: var(--border-width) solid var(--border-hairline); overflow: hidden;
+}
+@media (min-width: 1500px) { .hist { height: 110px; } }
+.hist .b {
+  flex: 1 1 0; min-width: 0; height: 0; background: var(--bar, var(--border-strong));
+  transition: height var(--duration-slow) var(--ease-out);
+  align-self: flex-end;
+}
+.histax {
+  display: flex; justify-content: space-between; margin-top: 5px;
+  font: var(--weight-regular) var(--text-2xs)/1 var(--font-mono); color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.note { margin-top: 6px; font: var(--weight-regular) var(--text-2xs)/1.4 var(--font-sans);
+        color: var(--text-faint); }
+
+/* worst offenders */
+.worst { display: flex; flex-direction: column; gap: 5px; }
+.wrow {
+  display: grid; grid-template-columns: 52px minmax(0,1fr) auto; gap: var(--space-2);
+  align-items: center; text-align: left; width: 100%;
+  padding: 5px; border-radius: var(--radius-sm);
+  background: transparent; border: var(--border-width) solid transparent;
+  cursor: pointer; transition: var(--transition-control);
+  animation: rowin var(--duration-slow) var(--ease-out);
+}
+@keyframes rowin { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.wrow:hover { background: var(--surface-hover); border-color: var(--border-hairline); }
+.wrow[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); }
+.wrow .th {
+  width: 52px; height: 39px; border-radius: var(--radius-xs); background: var(--black);
+  object-fit: cover; display: block; border: var(--border-width) solid var(--border-hairline);
+}
+.wrow .nm { min-width: 0; }
+.wrow .nm b { display: block; font: var(--weight-regular) var(--text-xs)/1.25 var(--font-sans);
+              color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrow .nm span { display: block; font: var(--weight-regular) var(--text-2xs)/1.3 var(--font-sans);
+                 color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrow .mae { font: var(--weight-medium) var(--text-sm)/1 var(--font-mono);
+             color: var(--vtext, var(--danger-fg)); font-variant-numeric: tabular-nums; }
+.emptyline { font: var(--type-caption); color: var(--text-faint); padding: var(--space-2) 0; }
+
+/* throughput */
+.thr { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--space-3); }
+.thr .k { font: var(--type-label); letter-spacing: var(--tracking-caps);
+          text-transform: uppercase; color: var(--text-faint); }
+.thr .v { margin-top: 2px; font: var(--weight-medium) var(--text-lg)/1 var(--font-mono);
+          color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.thr .v small { font: var(--weight-regular) var(--text-2xs)/1 var(--font-mono); color: var(--text-faint); }
+
+/* -------------------------------------------------------------- notices */
+.notice {
+  display: flex; align-items: flex-start; gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font: var(--type-caption); font-size: var(--text-sm);
+  border-bottom: var(--border-width) solid var(--border-hairline);
+}
+.notice--error { background: var(--danger-bg); color: var(--danger-fg); }
+.notice--warn { background: var(--warning-bg); color: var(--warning-fg); }
+.notice .body { flex: 1 1 auto; min-width: 0; }
+.notice strong { font-weight: var(--weight-medium); }
+.notice code { font: var(--weight-regular) var(--text-2xs)/1.4 var(--font-mono); opacity: 0.85;
+               word-break: break-word; }
+.notice .btn { height: 24px; margin-left: var(--space-2); flex: 0 0 auto; }
+#notices { grid-area: note; }
+
+/* a frozen banner rides over the stage */
+.frozen {
+  flex: 0 0 auto; align-self: flex-start;
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 4px 5px 4px 11px; border-radius: var(--radius-full);
+  background: var(--accent-tint); border: var(--border-width) solid var(--accent);
+  white-space: nowrap; max-width: 100%; overflow: hidden;
+  font: var(--weight-medium) var(--text-xs)/1 var(--font-sans); color: var(--text-strong);
+  animation: rowin var(--duration-slow) var(--ease-out);
+}
+.frozen span { overflow: hidden; text-overflow: ellipsis; }
+.frozen .btn { height: 22px; }
+
+/* --------------------------------------------------------------- status */
+.status {
+  grid-area: status; display: flex; align-items: center; flex-wrap: wrap;
+  gap: 0 var(--space-4); padding: 7px var(--space-4);
+  background: var(--surface-card);
+  border-top: var(--border-width) solid var(--border-hairline);
+  font: var(--weight-regular) var(--text-2xs)/1.6 var(--font-mono);
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+  min-height: 30px;
+}
+.status .k { color: var(--text-muted); }
+.status .right { margin-left: auto; }
+@media (max-width: 899px) { .status .right { margin-left: 0; } }
+</style>
+</head>
+<body>
+
+<div class="app" id="app" data-state="idle">
+
+  <header class="bar">
+    <div class="ident">
+      <span class="dot"></span>
+      <h1>The Photoshop gauntlet</h1>
+      <span class="sub">every file flattened by us, then diffed against Adobe's own composite</span>
+    </div>
+    <div class="grow"></div>
+    <div class="controls">
+      <input id="filter" class="field" type="search" placeholder="filter files…"
+             aria-label="Filter files by substring" spellcheck="false" autocomplete="off">
+      <div class="seg" role="group" aria-label="Pace">
+        <button class="btn" id="pace-slow"  type="button" aria-pressed="false">Watchable</button>
+        <button class="btn" id="pace-brisk" type="button" aria-pressed="false">Brisk</button>
+        <button class="btn" id="pace-full"  type="button" aria-pressed="false">Full speed</button>
+      </div>
+      <button class="btn btn--secondary" id="pause" type="button" disabled>
+        <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="1.5" width="3" height="9" rx="1" fill="currentColor"/><rect x="7" y="1.5" width="3" height="9" rx="1" fill="currentColor"/></svg>
+        <span id="pause-t">Pause</span>
+      </button>
+      <button class="btn btn--primary" id="start" type="button">
+        <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.8 10 6 3 10.2z" fill="currentColor"/></svg>
+        <span id="start-t">Start the run</span>
+      </button>
+      <span class="conn" id="conn" data-c="idle"><i></i><span id="conn-t">Idle</span></span>
+    </div>
+  </header>
+
+  <div id="notices" class="notices"></div>
+
+  <div class="railwrap">
+    <div class="phases">
+      <span class="label" style="margin-right:2px">This file</span>
+      <span class="phase" id="ph-import" data-on="off"><b></b>Import</span><span class="sep"></span>
+      <span class="phase" id="ph-flatten" data-on="off"><b></b>Flatten</span><span class="sep"></span>
+      <span class="phase" id="ph-compare" data-on="off"><b></b>Compare</span><span class="sep"></span>
+      <span class="phase" id="ph-done" data-on="off"><b></b>Done</span>
+      <span class="right" id="railcount">0 / 269</span>
+    </div>
+    <div class="rail" id="rail" role="img" aria-label="One tick per file, coloured by verdict"></div>
+    <p class="runline" id="runline" hidden></p>
+  </div>
+
+  <main class="stage" id="stage">
+    <div class="frozen" id="frozen" hidden>
+      <span id="frozen-t">Frozen</span>
+      <button class="btn btn--secondary" id="unfreeze" type="button">Back to live</button>
+    </div>
+    <div class="triptych">
+      <figure class="panel" style="margin:0">
+        <figcaption class="cap"><span class="who">Ours</span><span class="grow"></span><span class="sub2">OpenPhotoEdit</span></figcaption>
+        <div class="plate empty" id="plate-ours"><img alt="Our flattened composite" id="ours-a"><img alt="" id="ours-b"><span class="pnote" id="note-ours"></span></div>
+      </figure>
+      <figure class="panel" style="margin:0">
+        <figcaption class="cap"><span class="who">Adobe's</span><span class="grow"></span><span class="sub2">composite in the file</span></figcaption>
+        <div class="plate empty" id="plate-adobe"><img alt="The composite Photoshop stored in the file" id="adobe-a"><img alt="" id="adobe-b"><span class="pnote" id="note-adobe"></span></div>
+      </figure>
+      <figure class="panel panel--diff" style="margin:0">
+        <figcaption class="cap">
+          <span class="who">Difference</span>
+          <span class="grow"></span>
+          <span class="seg" role="group" aria-label="Difference view gain">
+            <button class="btn" type="button" data-gain="1" aria-pressed="true">1&times;</button>
+            <button class="btn" type="button" data-gain="4" aria-pressed="false">4&times;</button>
+            <button class="btn" type="button" data-gain="10" aria-pressed="false">10&times;</button>
+          </span>
+        </figcaption>
+        <div class="plate empty" id="plate-diff"><img alt="Amplified absolute difference" id="diff-a"><img alt="" id="diff-b"><span class="pnote" id="note-diff"></span></div>
+      </figure>
+    </div>
+
+    <div class="meta">
+      <div style="min-width:0">
+        <h2 class="fname" id="fname">Nothing loaded yet</h2>
+        <div class="fmeta" id="fmeta"><i>waiting for the first file</i></div>
+      </div>
+      <div class="verdictbox">
+        <span class="chip" id="chip">—</span>
+        <div class="err">mae<b id="mae">—</b></div>
+        <div class="err">p95<b id="p95">—</b></div>
+        <div class="err">time<b id="ms">—</b></div>
+      </div>
+    </div>
+
+    <div class="veil" id="veil" hidden><div class="card" id="card"></div></div>
+  </main>
+
+  <aside class="side">
+    <section class="box">
+      <h3>Scoreboard<span class="n" id="sc-seen">0</span></h3>
+      <div class="score" id="score"></div>
+    </section>
+
+    <section class="box">
+      <h3>Mean absolute error<span class="n" id="hist-n">0</span></h3>
+      <div class="hist" id="hist" role="img" aria-label="Histogram of mean absolute error"></div>
+      <div class="histax" id="histax"><span>0</span><span>4</span><span>8</span><span>12</span><span>16+</span></div>
+      <p class="note" id="histnote">32 buckets, 0.5&nbsp;levels wide, on an 8-bit scale;
+        the last holds everything above 15.5. Bar height is &radic;count, so one bad file
+        stays visible beside a hundred good ones.</p>
+    </section>
+
+    <section class="box">
+      <h3>Worst so far<span class="n" id="worst-n">0</span></h3>
+      <div class="worst" id="worst"><p class="emptyline">Nothing has gone wrong yet.</p></div>
+    </section>
+
+    <section class="box" style="border-bottom:0">
+      <h3>Throughput</h3>
+      <div class="thr">
+        <div><div class="k">Files / sec</div><div class="v" id="t-fps">0.0</div></div>
+        <div><div class="k">Megapixels / sec</div><div class="v" id="t-mps">0.0</div></div>
+        <div><div class="k">Elapsed</div><div class="v" id="t-el">0.0<small>s</small></div></div>
+        <div><div class="k">Pixels done</div><div class="v" id="t-mp">0<small>MP</small></div></div>
+      </div>
+    </section>
+  </aside>
+
+  <footer class="status">
+    <span><span class="k">run</span> <span id="s-run">—</span></span>
+    <span><span class="k">phase</span> <span id="s-phase">idle</span></span>
+    <span><span class="k">pace</span> <span id="s-pace">420 ms</span></span>
+    <span><span class="k">queued</span> <span id="s-queue">0</span></span>
+    <span><span class="k">step</span> <span id="s-step">—</span></span>
+    <span class="right"><span class="k">stream</span> <span id="s-src">—</span></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+(function () {
+
+/* ------------------------------------------------------------ constants */
+
+const VERDICTS = ["exact", "within1", "within3", "within10", "over", "structureOnly", "failed"];
+const VLABEL = {
+  exact: "Exact", within1: "Within 1", within3: "Within 3", within10: "Within 10",
+  over: "Over 10", structureOnly: "Structure only", failed: "Failed"
+};
+const VBLURB = {
+  exact: "identical to Adobe", within1: "≤ 1 level off", within3: "≤ 3 levels off",
+  within10: "≤ 10 levels off", over: "more than 10 levels off",
+  structureOnly: "no Adobe composite to compare", failed: "we could not read it"
+};
+const BUCKETS = 32;      // histogram buckets
+const BUCKET_W = 0.5;    // MAE per bucket, so the axis runs 0 … 16+
+const PACES = { slow: 620, brisk: 200, full: 0 };
+
+/* Where the AG-UI stream lives. ?stream= overrides; otherwise each candidate
+   is tried in turn until one delivers an event, so this page does not have to
+   guess the server's route correctly on the first try. */
+const Q = new URLSearchParams(location.search);
+const CANDIDATES = Q.get("stream")
+  ? [Q.get("stream")]
+  : ["/gauntlet/stream", "/agui/gauntlet", "/gauntlet/events", "/agui/stream", "/events"];
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ----------------------------------------------------------------- dom */
+
+const $ = (id) => document.getElementById(id);
+const app = $("app"), stage = $("stage");
+
+/* --------------------------------------------------------------- state */
+
+function blankState() {
+  return {
+    total: 0, comparable: 0, index: 0, phase: "import",
+    current: null,
+    tally: { exact: 0, within1: 0, within3: 0, within10: 0, over: 0, structureOnly: 0, failed: 0 },
+    histogram: new Array(BUCKETS).fill(0), histogramEdges: null,
+    worst: [],
+    throughput: { filesPerSec: 0, megapixelsPerSec: 0, elapsedMs: 0 }
+  };
+}
+
+let S = blankState();          // the state the stream has given us so far
+let queue = [];                // events not yet applied — this is what "pause" holds
+let paused = false;
+let pace = PACES.slow;
+let paceKey = "slow";
+let gain = 1;
+let frozen = null;             // a worst-offender pinned for inspection
+let shownFile = null;          // the file the triptych is currently showing
+let ledger = [];               // one row per file we have seen land
+let seen = new Map();          // file -> that row, so two deltas about one
+                               // file are one file, not two
+let runId = null, srcUrl = null, stepName = "", said = "", opening = "", result = null;
+const msgs = Object.create(null);
+let es = null, candIdx = 0, sawEvent = false, wantOpen = false;
+let lastApply = 0, dirty = true, lastQueue = -1;
+let ended = null;              // "done" | "error" | "empty", once applied
+let terminal = null;           // the same, the moment the event is *received*
+let errorMsg = null;
+let noticeState = {};          // id -> {kind, html}
+
+/* the counters we tween rather than snap */
+const disp = Object.create(null);
+const target = Object.create(null);
+function aim(k, v) { target[k] = v; if (!(k in disp)) disp[k] = reduced ? v : 0; }
+
+/* ------------------------------------------------------- query defaults */
+
+if (Q.has("pace")) {
+  const p = Number(Q.get("pace"));
+  if (Number.isFinite(p) && p >= 0) {
+    pace = p;
+    paceKey = p === 0 ? "full" : p < 400 ? "brisk" : "slow";
+  }
+}
+if (Q.get("filter")) $("filter").value = Q.get("filter");
+
+/* --------------------------------------------------------- JSON Pointer */
+
+function unescapeTok(t) { return t.replace(/~1/g, "/").replace(/~0/g, "~"); }
+function tokens(path) {
+  if (!path || path === "/") return path === "/" ? [""] : [];
+  return path.split("/").slice(1).map(unescapeTok);
+}
+function getPath(root, path) {
+  let cur = root;
+  for (const t of tokens(path)) {
+    if (cur == null) return undefined;
+    cur = Array.isArray(cur) ? cur[t === "-" ? cur.length - 1 : Number(t)] : cur[t];
+  }
+  return cur;
+}
+function locate(root, path) {
+  const ts = tokens(path);
+  let cur = root;
+  for (let i = 0; i < ts.length - 1; i++) {
+    const t = ts[i];
+    const k = Array.isArray(cur) ? Number(t) : t;
+    if (cur[k] == null || typeof cur[k] !== "object") cur[k] = {};
+    cur = cur[k];
+  }
+  return { parent: cur, token: ts[ts.length - 1] };
+}
+function setAt(root, path, value) {
+  const { parent, token } = locate(root, path);
+  if (Array.isArray(parent)) {
+    const i = token === "-" ? parent.length : Number(token);
+    parent[i] = value;
+  } else parent[token] = value;
+}
+function insertAt(root, path, value) {
+  const { parent, token } = locate(root, path);
+  if (Array.isArray(parent)) parent.splice(token === "-" ? parent.length : Number(token), 0, value);
+  else parent[token] = value;
+}
+function removeAt(root, path) {
+  const { parent, token } = locate(root, path);
+  if (Array.isArray(parent)) parent.splice(Number(token), 1);
+  else delete parent[token];
+}
+
+/** RFC 6902, the subset a state stream actually emits, and forgiving: a bad
+ *  op is dropped rather than allowed to kill the run. */
+function applyPatch(root, ops) {
+  let out = root;
+  for (const op of (Array.isArray(ops) ? ops : [])) {
+    try {
+      if (op.path === "" && (op.op === "replace" || op.op === "add")) { out = op.value; continue; }
+      switch (op.op) {
+        case "add": insertAt(out, op.path, op.value); break;
+        case "replace": setAt(out, op.path, op.value); break;
+        case "remove": removeAt(out, op.path); break;
+        case "copy": insertAt(out, op.path, JSON.parse(JSON.stringify(getPath(out, op.from)))); break;
+        case "move": {
+          const v = getPath(out, op.from);
+          removeAt(out, op.from);
+          insertAt(out, op.path, v);
+          break;
+        }
+        case "test": break;
+        default: break;
+      }
+    } catch (e) { /* a malformed op must not stop the show */ }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------ AG-UI in */
+
+/** RUN_STARTED, RunStarted and run_started are the same event. */
+const norm = (s) => String(s || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+
+function onEvent(raw, sseName) {
+  let ev;
+  try { ev = typeof raw === "string" ? JSON.parse(raw) : raw; }
+  catch (e) { return; }
+  if (!ev || typeof ev !== "object") return;
+  sawEvent = true;
+  const type = norm(ev.type || sseName);
+
+  switch (type) {
+    case "RUNSTARTED":
+      runId = ev.runId || ev.run_id || null;
+      ended = null; terminal = null; errorMsg = null; result = null;
+      stepName = ""; said = ""; opening = "";
+      ledger = []; seen = new Map(); frozen = null; shownFile = null;
+      S = blankState();
+      queue.length = 0;
+      buildRail(0);
+      clearNotice("drop"); clearNotice("run");
+      setConn("live");
+      dirty = true;
+      break;
+
+    case "STATESNAPSHOT":
+      queue.push({ k: "snap", v: ev.snapshot || ev.state || {} });
+      break;
+
+    case "STATEDELTA":
+      queue.push({ k: "delta", v: ev.delta || ev.patch || [] });
+      break;
+
+    case "STEPSTARTED":
+      queue.push({ k: "step", v: ev.stepName || ev.step_name || "" });
+      break;
+
+    case "TEXTMESSAGESTART":
+      msgs[ev.messageId] = "";
+      break;
+
+    case "TEXTMESSAGECONTENT":
+      if (ev.messageId in msgs) msgs[ev.messageId] += (ev.delta || "");
+      break;
+
+    case "TEXTMESSAGEEND":
+      if (msgs[ev.messageId]) queue.push({ k: "said", v: msgs[ev.messageId] });
+      delete msgs[ev.messageId];
+      break;
+
+    case "STEPFINISHED":
+      break;
+
+    case "RUNFINISHED":
+      terminal = "done";
+      result = ev.result || null;
+      queue.push({ k: "end", v: "done" });
+      break;
+
+    case "RUNERROR":
+      terminal = "error";
+      queue.push({ k: "end", v: "error", m: ev.message || "The run stopped.", c: ev.code });
+      break;
+
+    case "CUSTOM":
+      /* a server may push a one-off note; show it rather than swallow it */
+      if (ev.name === "notice" && ev.value) queue.push({ k: "notice", v: String(ev.value) });
+      break;
+
+    default: break;
+  }
+}
+
+/* ------------------------------------------------------ the apply loop */
+
+function applyOne() {
+  const e = queue.shift();
+  if (!e) return false;
+  if (e.k === "snap") {
+    const before = S.total;
+    S = Object.assign(blankState(), e.v);
+    if (!Array.isArray(S.histogram)) S.histogram = new Array(BUCKETS).fill(0);
+    if (!Array.isArray(S.worst)) S.worst = [];
+    if (!S.tally) S.tally = blankState().tally;
+    if (S.total !== before) buildRail(S.total);
+    if (S.total === 0) ended = "empty";
+  } else if (e.k === "delta") {
+    S = applyPatch(S, e.v);
+    if (!Array.isArray(S.histogram)) S.histogram = new Array(BUCKETS).fill(0);
+    if (railTicks.length !== (S.total | 0)) buildRail(S.total);
+  } else if (e.k === "step") {
+    stepName = String(e.v || "");
+  } else if (e.k === "said") {
+    said = String(e.v);
+    if (!S.current) opening = said;
+  } else if (e.k === "end") {
+    if (e.v === "error") { ended = "error"; errorMsg = (e.c ? e.c + " — " : "") + e.m; }
+    else { ended = S.total === 0 ? "empty" : "done"; S.phase = "done"; }
+    closeStream();
+    setConn(ended === "error" ? "stopped" : "done");
+    clearNotice("drop");
+  } else if (e.k === "notice") {
+    setNotice("run", "warn", escapeHtml(e.v));
+  }
+  noteFile();
+  dirty = true;
+  return true;
+}
+
+/** One ledger row per file that lands, so median / megapixels / the rail are
+ *  ours to compute and do not depend on the server sending them. */
+function noteFile() {
+  const c = S.current;
+  if (!c || !c.file) return;
+  const at = S.index | 0;
+  const row = seen.get(c.file);
+  if (row) {
+    /* the same file described again — update it, never count it twice */
+    row.mae = num(c.mae); row.p95 = num(c.p95);
+    row.verdict = c.verdict || row.verdict; row.ms = num(c.ms);
+    row.mp = (num(c.width) * num(c.height)) / 1e6;
+    row.index = at;
+  } else {
+    const r = {
+      file: c.file, index: at, mae: num(c.mae), p95: num(c.p95),
+      verdict: c.verdict || "failed", ms: num(c.ms),
+      mp: (num(c.width) * num(c.height)) / 1e6
+    };
+    r.at = ledger.length;
+    ledger.push(r);
+    seen.set(c.file, r);
+  }
+  paintTick(seen.get(c.file).at, c.verdict);
+}
+
+function tick(t) {
+  if (!paused) {
+    if (pace <= 0) {
+      let n = 0;
+      while (queue.length && n < 400) { applyOne(); n++; }
+    } else if (queue.length > 400) {
+      /* the stream has outrun the chosen pace — catch up rather than grow a
+         queue of megabytes of base64 */
+      let n = 0;
+      while (queue.length > 120 && n < 600) { applyOne(); n++; }
+      lastApply = t;
+    } else if (t - lastApply >= pace) {
+      /* drain everything up to and including the next file, then dwell. A
+         file's phase and step events are not worth a frame of their own. */
+      let guard = 0;
+      while (queue.length && guard < 400) {
+        const before = ledger.length;
+        applyOne(); guard++;
+        if (ledger.length !== before) { lastApply = t; break; }
+      }
+    }
+  }
+  if (dirty) { render(); dirty = false; }
+  if (queue.length !== lastQueue) {
+    lastQueue = queue.length;
+    $("s-queue").textContent = String(lastQueue);
+    if (paused) $("pause-t").textContent = "Resume" + (lastQueue ? " (" + lastQueue + ")" : "");
+  }
+  tweens();
+  requestAnimationFrame(tick);
+}
+
+/* ----------------------------------------------------------- tweening */
+
+function tweens() {
+  let moved = false;
+  for (const k in target) {
+    const to = target[k];
+    let v = disp[k];
+    if (v === to) continue;
+    if (reduced || Math.abs(to - v) < 0.01) v = to;
+    else v += (to - v) * 0.22;
+    disp[k] = v; moved = true;
+  }
+  if (moved) paintNumbers();
+}
+
+const fmtInt = (n) => Math.round(n).toLocaleString("en-US");
+const fmt1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
+const fmt2 = (n) => (Math.round(n * 100) / 100).toFixed(2);
+function num(v) { return typeof v === "number" && isFinite(v) ? v : 0; }
+function has(v) { return typeof v === "number" && isFinite(v); }
+
+function paintNumbers() {
+  for (const v of VERDICTS) {
+    const el = $("sc-" + v);
+    if (el) {
+      el.textContent = fmtInt(disp["t_" + v] || 0);
+      el.parentElement.dataset.zero = (target["t_" + v] || 0) === 0 ? "1" : "0";
+    }
+  }
+  $("sc-seen").textContent = fmtInt(disp.seen || 0) + " / " + (S.total || 0);
+  $("t-fps").textContent = fmt1(disp.fps || 0);
+  $("t-mps").textContent = fmt1(disp.mps || 0);
+  $("t-el").innerHTML = fmt1((disp.el || 0) / 1000) + "<small>s</small>";
+  $("t-mp").innerHTML = fmtInt(disp.mp || 0) + "<small>MP</small>";
+  $("railcount").textContent = fmtInt(disp.seen || 0) + " / " + (S.total || 0);
+}
+
+/* -------------------------------------------------------------- render */
+
+let railTicks = [];
+function buildRail(total) {
+  const rail = $("rail");
+  rail.textContent = "";
+  railTicks = [];
+  const n = Math.max(0, total | 0);
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < n; i++) {
+    const s = document.createElement("span");
+    s.className = "t";
+    frag.appendChild(s);
+    railTicks.push(s);
+  }
+  rail.appendChild(frag);
+  /* 269 ticks in 400px cannot afford a gap */
+  rail.style.gap = n > 140 ? "0px" : "1px";
+}
+function paintTick(i, verdict) {
+  const t = railTicks[i];
+  if (!t) return;
+  t.dataset.v = verdict || "failed";
+  t.style.setProperty("--tick", "var(--v-" + (VERDICTS.indexOf(verdict) >= 0 ? verdict : "failed") + ")");
+  for (const p of railTicks) p.classList.remove("now");
+  t.classList.add("now");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function splitPath(p) {
+  const i = String(p).lastIndexOf("/");
+  return i < 0 ? ["", String(p)] : [String(p).slice(0, i + 1), String(p).slice(i + 1)];
+}
+
+function render() {
+  const c = frozen || S.current;
+
+  /* phases */
+  const order = ["import", "flatten", "compare", "done"];
+  const at = order.indexOf(ended === "done" ? "done" : (S.phase || "import"));
+  order.forEach((p, i) => {
+    $("ph-" + p).dataset.on = i < at ? "past" : i === at ? "now" : "off";
+  });
+
+  /* the readout is painted by present(), once all three images have decoded,
+     so the filename can never describe a picture that is not on screen yet */
+  if (c && c.file) present(c);
+
+  /* scoreboard */
+  const t = S.tally || {};
+  let seen = 0;
+  for (const v of VERDICTS) { aim("t_" + v, num(t[v])); seen += num(t[v]); }
+  aim("seen", seen);
+
+  /* histogram */
+  paintHist();
+
+  /* worst */
+  paintWorst();
+
+  /* throughput — elapsed and megapixels come from the stream when it sends
+     them and from our own ledger when it does not */
+  const th = S.throughput || {};
+  aim("fps", num(th.filesPerSec));
+  aim("mps", num(th.megapixelsPerSec));
+  aim("el", num(th.elapsedMs));
+  aim("mp", result && has(result.megapixels)
+    ? result.megapixels : ledger.reduce((a, r) => a + r.mp, 0));
+
+  /* status line */
+  $("s-run").textContent = runId ? String(runId).slice(0, 12) : "—";
+  $("s-phase").textContent = ended === "error" ? "error" : (ended === "done" ? "done" : (S.phase || "idle"));
+  $("s-step").textContent = ended ? "—" : (stepName ? splitPath(stepName)[1] : "—");
+  $("runline").textContent = opening;
+  $("runline").hidden = !opening;
+  $("runline").title = opening;
+  $("s-pace").textContent = pace === 0 ? "full speed" : pace + " ms";
+  $("s-queue").textContent = String(queue.length);
+  $("s-src").textContent = srcUrl || "—";
+
+  $("frozen").hidden = !frozen;
+  if (frozen) $("frozen-t").textContent = "Frozen on " + splitPath(frozen.file)[1];
+
+  app.dataset.state = ended || (S.current ? "running" : (wantOpen ? "connecting" : "idle"));
+  paintOverlay();
+  paintNumbers();
+}
+
+/* --- triptych ---------------------------------------------------------- */
+
+/* Ours, Adobe's and the difference are one picture of one file. At full speed
+   a new file lands every few milliseconds, so the three are decoded together
+   and revealed together; a swap the stream has already overtaken is dropped
+   rather than half-applied. */
+
+let swapToken = 0, pendingKey = null;
+
+const WHY = {
+  ours: { failed: "the file would not open" },
+  adobe: { failed: "not read", structureOnly: "no Adobe composite in this file" },
+  diff: { failed: "nothing to compare", structureOnly: "nothing to compare against" }
+};
+function whyEmpty(pane, c) {
+  if (pane === "adobe" && c.note) return String(c.note);
+  const v = VERDICTS.indexOf(c.verdict) >= 0 ? c.verdict : "";
+  const m = WHY[pane];
+  return m[v] != null ? m[v] : (pane === "ours" ? "" : "not sent");
+}
+function setAr(w, h) {
+  if (w > 0 && h > 0)
+    document.querySelector(".triptych").style.setProperty("--ar", w + " / " + h);
+}
+
+function present(c) {
+  const key = (frozen ? "F:" : "L:") + c.file + ":" + (c.ours ? c.ours.length : 0);
+  if (key === shownFile || key === pendingKey) return;
+  pendingKey = key;
+  const my = ++swapToken;
+
+  const plan = [];
+  const waits = [];
+  for (const [name, src] of [["ours", c.ours], ["adobe", c.adobe], ["diff", c.diff]]) {
+    const a = $(name + "-a"), b = $(name + "-b");
+    const incoming = a.classList.contains("on") ? b : a;
+    plan.push({ name: name, src: src, incoming: incoming, outgoing: incoming === a ? b : a });
+    if (!src) continue;
+    incoming.src = src;
+    waits.push(incoming.decode
+      ? incoming.decode().catch(function () {})
+      : new Promise(function (r) { incoming.onload = r; incoming.onerror = r; }));
+  }
+
+  Promise.all(waits).then(function () {
+    if (my !== swapToken) return;          // the stream moved on; drop this one
+    shownFile = key;
+    pendingKey = null;
+    if (c.width > 0 && c.height > 0) setAr(c.width, c.height);
+    else if (plan[0].incoming.naturalWidth > 0)
+      setAr(plan[0].incoming.naturalWidth, plan[0].incoming.naturalHeight);
+
+    /* all three at once: a stagger, however pretty, means the caption can
+       describe one file while a panel still shows the one before it */
+    plan.forEach(function (p) {
+      (function () {
+        const plate = $("plate-" + p.name);
+        if (!p.src) {
+          p.incoming.classList.remove("on");
+          p.outgoing.classList.remove("on");
+          plate.classList.add("empty");
+          $("note-" + p.name).textContent = whyEmpty(p.name, c);
+        } else {
+          plate.classList.remove("empty");
+          p.incoming.classList.add("on");
+          p.outgoing.classList.remove("on");
+        }
+      })();
+    });
+    paintMeta(c);
+  });
+}
+
+function paintMeta(c) {
+  const [dir, base] = splitPath(c.file);
+  $("fname").innerHTML = '<span class="dir">' + escapeHtml(dir) + "</span>" + escapeHtml(base);
+  const bits = [];
+  if (c.width && c.height) bits.push(fmtInt(c.width) + " × " + fmtInt(c.height) + " px");
+  if (c.layers != null) bits.push(c.layers + (c.layers === 1 ? " layer" : " layers"));
+  if (c.width && c.height) bits.push(fmt1((c.width * c.height) / 1e6) + " MP");
+  if (c.note) bits.push(String(c.note));
+  if (frozen && !bits.length) bits.push("pinned from the worst list");
+  $("fmeta").innerHTML = bits.length
+    ? bits.map(escapeHtml).join(' <i>·</i> ')
+    : "<i>no measurements beyond the error</i>";
+
+  const v = VERDICTS.indexOf(c.verdict) >= 0 ? c.verdict : "failed";
+  const chip = $("chip");
+  chip.dataset.v = v;
+  chip.style.setProperty("--vbg", "var(--v-" + v + ")");
+  chip.style.setProperty("--vink", "var(--vi-" + v + ")");
+  chip.innerHTML = "<span>" + escapeHtml(VLABEL[v]) + '</span><span class="blurb">&nbsp;— ' +
+    escapeHtml(VBLURB[v]) + "</span>";
+  const vt = "var(--vt-" + v + ")";
+  const comparable = v !== "structureOnly" && v !== "failed";
+  $("mae").textContent = comparable && has(c.mae) ? fmt2(c.mae) : "—";
+  $("mae").style.setProperty("--vtext", vt);
+  $("p95").textContent = comparable && has(c.p95) ? fmt1(c.p95) : "—";
+  $("p95").style.setProperty("--vtext", vt);
+  $("ms").innerHTML = has(c.ms) ? fmtInt(c.ms) + "<small> ms</small>" : "—";
+}
+
+/* --- histogram --------------------------------------------------------- */
+
+let histBars = [];
+/** [lo, hi) for bucket i — from the stream's histogramEdges when it sends
+ *  them, otherwise the 0.5-level scale documented in NOTES.md. */
+function bucketRange(i) {
+  const e = S.histogramEdges;
+  if (Array.isArray(e) && e.length > i) {
+    const lo = num(e[i]);
+    const hi = i + 1 < e.length && has(e[i + 1]) ? e[i + 1] : Infinity;
+    return [lo, hi];
+  }
+  return [i * BUCKET_W, (i + 1) * BUCKET_W];
+}
+function bucketVerdict(i) {
+  const [lo, hi] = bucketRange(i);
+  if (lo <= 0 && hi <= 0.5) return "exact";
+  const centre = isFinite(hi) ? (lo + hi) / 2 : lo;
+  if (centre <= 1) return "within1";
+  if (centre <= 3) return "within3";
+  if (centre <= 10) return "within10";
+  return "over";
+}
+function paintAxis() {
+  const n = (S.histogram || []).length;
+  if (!n) return;
+  const at = [0, Math.round(n / 4), Math.round(n / 2), Math.round((3 * n) / 4), n - 1];
+  const spans = $("histax").children;
+  const last = bucketRange(n - 1)[0];
+  $("histnote").textContent =
+    n + " buckets, " + fmt0(bucketRange(0)[1] - bucketRange(0)[0]) +
+    " levels wide, on an 8-bit scale; the last holds everything above " +
+    fmt0(last) + ". Bar height is \u221acount, so one bad file stays visible " +
+    "beside a hundred good ones.";
+  for (let k = 0; k < spans.length && k < at.length; k++) {
+    const [lo, hi] = bucketRange(at[k]);
+    spans[k].textContent = k === at.length - 1 ? fmt0(lo) + "+" : fmt0(lo);
+  }
+}
+const fmt0 = (v) => (Math.round(v * 10) / 10).toString();
+function paintHist() {
+  const h = S.histogram || [];
+  const el = $("hist");
+  if (histBars.length !== h.length) {
+    el.textContent = "";
+    histBars = [];
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < h.length; i++) {
+      const b = document.createElement("span");
+      b.className = "b";
+      const [lo, hi] = bucketRange(i);
+      b.style.setProperty("--bar", "var(--v-" + bucketVerdict(i) + ")");
+      b.title = "MAE " + fmt1(lo) + (isFinite(hi) ? "–" + fmt1(hi) : " and above");
+      frag.appendChild(b);
+      histBars.push(b);
+    }
+    el.appendChild(frag);
+  }
+  let max = 0, sum = 0;
+  for (const v of h) { if (v > max) max = v; sum += v; }
+  for (let i = 0; i < histBars.length; i++) {
+    const v = num(h[i]);
+    const frac = max > 0 ? Math.sqrt(v / max) : 0;
+    /* a nonzero bucket never disappears: the failures must be as loud as the passes */
+    histBars[i].style.height = v > 0 ? Math.max(4, frac * 100) + "%" : "0%";
+  }
+  $("hist-n").textContent = fmtInt(sum);
+  paintAxis();
+}
+
+/* --- worst offenders --------------------------------------------------- */
+
+let worstKey = null;
+function paintWorst() {
+  const w = (S.worst || []).slice(0, 8);
+  const key = w.map((x) => x.file + ":" + x.mae).join("|");
+  if (key === worstKey) {
+    for (const row of $("worst").querySelectorAll(".wrow"))
+      row.setAttribute("aria-pressed", String(!!frozen && row.dataset.file === frozen.file));
+    return;
+  }
+  worstKey = key;
+  const host = $("worst");
+  host.textContent = "";
+  $("worst-n").textContent = String(w.length);
+  if (!w.length) {
+    const p = document.createElement("p");
+    p.className = "emptyline";
+    p.textContent = ended ? "No file missed by more than we can show." : "Nothing has gone wrong yet.";
+    host.appendChild(p);
+    return;
+  }
+  for (const x of w) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "wrow";
+    b.dataset.file = x.file;
+    b.setAttribute("aria-pressed", String(!!frozen && frozen.file === x.file));
+    const [dir, base] = splitPath(x.file);
+    const img = document.createElement("img");
+    img.className = "th";
+    img.alt = "";
+    if (x.diff) img.src = x.diff;
+    const nm = document.createElement("div");
+    nm.className = "nm";
+    const bb = document.createElement("b"); bb.textContent = base;
+    const ss = document.createElement("span"); ss.textContent = dir || "./";
+    nm.appendChild(bb); nm.appendChild(ss);
+    const mae = document.createElement("span");
+    mae.className = "mae";
+    mae.textContent = fmt1(num(x.mae));
+    const v = x.verdict && VERDICTS.indexOf(x.verdict) >= 0 ? x.verdict : verdictOf(x.mae);
+    mae.style.setProperty("--vtext", "var(--vt-" + v + ")");
+    b.appendChild(img); b.appendChild(nm); b.appendChild(mae);
+    b.addEventListener("click", () => freezeOn(x));
+    host.appendChild(b);
+  }
+}
+
+function verdictOf(mae) {
+  if (!has(mae)) return "failed";
+  if (mae <= 0) return "exact";
+  if (mae <= 1) return "within1";
+  if (mae <= 3) return "within3";
+  if (mae <= 10) return "within10";
+  return "over";
+}
+function freezeOn(x) {
+  if (frozen && frozen.file === x.file) { frozen = null; }
+  else frozen = Object.assign({ verdict: verdictOf(x.mae), layers: null }, x);
+  shownFile = null; pendingKey = null;
+  worstKey = null;
+  dirty = true;
+}
+$("unfreeze").addEventListener("click", () => {
+  frozen = null; shownFile = null; pendingKey = null; worstKey = null; dirty = true;
+});
+
+/* --- overlays ---------------------------------------------------------- */
+
+let overlayKey = "";
+function paintOverlay() {
+  const key = ended === "error" ? "error:" + errorMsg
+    : ended === "empty" ? "empty"
+      : ended === "done" ? "done:" + ledger.length
+        : (S.current || wantOpen) ? "" : "idle";
+  if (key === overlayKey) return;
+  overlayKey = key;
+  const veil = $("veil"), card = $("card");
+  if (!key) { veil.hidden = true; card.textContent = ""; return; }
+  veil.hidden = false;
+  card.className = "card";
+  if (key === "idle") card.innerHTML = idleCard();
+  else if (key === "empty") card.innerHTML = emptyCard();
+  else if (ended === "error") { card.className = "card card--bad"; card.innerHTML = errorCard(); }
+  else card.innerHTML = summaryCard();
+  wireCard();
+}
+
+function idleCard() {
+  return '<div class="eyebrow">The claim, tested</div>' +
+    "<h2>269 real Photoshop files, one at a time</h2>" +
+    "<p>Every file in the corpus is opened by our engine and flattened. Photoshop " +
+    "wrote its own flattened composite into the same file when it saved; we compare " +
+    "against that, pixel for pixel, and show you all three — ours, Adobe's, and the " +
+    "amplified difference. Nothing is hidden: the tally below counts the files we " +
+    "miss by a mile alongside the ones we match exactly.</p>" +
+    '<div class="row"><button class="btn btn--primary btn--lg" data-act="start">Start the run</button>' +
+    '<button class="btn btn--secondary btn--lg" data-act="dismiss">Just show me the board</button></div>';
+}
+
+function emptyCard() {
+  const f = $("filter").value.trim();
+  return '<div class="eyebrow">Nothing to run</div>' +
+    "<h2>No file matched " + (f ? "&ldquo;" + escapeHtml(f) + "&rdquo;" : "that filter") + "</h2>" +
+    "<p>The corpus has 269 files and the filter is a plain substring match on the " +
+    "path. Clear it, or try a fragment like <code>psd-tools</code> or <code>effects</code>.</p>" +
+    '<div class="row"><button class="btn btn--primary" data-act="clear">Clear the filter and run everything</button>' +
+    '<button class="btn btn--secondary" data-act="dismiss">Close</button></div>';
+}
+
+function errorCard() {
+  const done = ledger.length;
+  return '<div class="eyebrow">The run stopped</div>' +
+    "<h2>" + (done ? "Stopped after " + done + (done === 1 ? " file" : " files") : "The run did not start") + "</h2>" +
+    "<p>The server sent a <code>RunError</code>. Everything measured before it is still " +
+    "on the board behind this card.</p>" +
+    '<p style="color:var(--danger-fg)"><code>' + escapeHtml(errorMsg || "no message") + "</code></p>" +
+    '<div class="row"><button class="btn btn--primary" data-act="start">Run it again</button>' +
+    '<button class="btn btn--secondary" data-act="dismiss">Look at what we got</button></div>';
+}
+
+function summaryCard() {
+  const t = S.tally || {};
+  const counts = VERDICTS.map((v) => ({ v: v, n: num(t[v]) }));
+  const total = counts.reduce((a, x) => a + x.n, 0) || 1;
+  const comparable = num(t.exact) + num(t.within1) + num(t.within3) + num(t.within10) + num(t.over);
+  const good = num(t.exact) + num(t.within1);
+  const maes = ledger.filter((r) => r.verdict !== "structureOnly" && r.verdict !== "failed")
+    .map((r) => r.mae).sort((a, b) => a - b);
+  const median = maes.length ? (maes.length % 2 ? maes[(maes.length - 1) / 2]
+    : (maes[maes.length / 2 - 1] + maes[maes.length / 2]) / 2) : 0;
+  const worst = (S.worst && S.worst[0]) || (maes.length ? { file: "—", mae: maes[maes.length - 1] } : null);
+  /* the server's own figure when it sends one; ours only as a fallback */
+  const mp = result && has(result.megapixels)
+    ? result.megapixels : ledger.reduce((a, r) => a + r.mp, 0);
+  const th = S.throughput || {};
+  const el = num(th.elapsedMs);
+
+  const bar = counts.filter((x) => x.n > 0).map((x) =>
+    '<span style="width:' + ((x.n / total) * 100).toFixed(3) + "%;background:var(--v-" + x.v + ')" ' +
+    'title="' + VLABEL[x.v] + ": " + x.n + '"></span>').join("");
+
+  const key = counts.map((x) =>
+    '<div><i style="background:var(--v-' + x.v + ')"></i>' + VLABEL[x.v] +
+    " <b>" + x.n + "</b> <span style=\"color:var(--text-faint)\">" +
+    ((x.n / total) * 100).toFixed(1) + "%</span></div>").join("");
+
+  return '<div class="eyebrow">Run complete</div>' +
+    '<h2 style="font-size:var(--text-2xl);line-height:1.05">' + fmtInt(good) + " of " + fmtInt(comparable) +
+    " comparable files within one level of Adobe</h2>" +
+    '<p class="headline">' + fmtInt(total) + " files attempted · <b>" + fmtInt(comparable) +
+    "</b> had an Adobe composite to compare against · <b>" + fmtInt(num(t.structureOnly)) +
+    "</b> did not · <b>" + fmtInt(num(t.failed)) + "</b> failed outright · <b>" +
+    fmtInt(num(t.over)) + "</b> missed by more than ten levels.</p>" +
+    '<div class="stack">' + bar + "</div>" +
+    '<div class="stackkey">' + key + "</div>" +
+    '<div class="facts">' +
+    fact("Median MAE", fmt2(median)) +
+    fact("Worst MAE", worst ? fmt1(num(worst.mae)) : "—",
+      worst && worst.file !== "—" ? splitPath(worst.file)[1] : "") +
+    fact("Total time", fmt1(el / 1000), "seconds") +
+    fact("Pixels", fmtInt(mp), "megapixels") +
+    fact("Files / sec", fmt1(num(th.filesPerSec))) +
+    fact("MP / sec", fmt1(num(th.megapixelsPerSec))) +
+    "</div>" +
+    (said ? '<p style="border-left:2px solid var(--border-strong);padding-left:var(--space-3);' +
+      'color:var(--text-body)">' + escapeHtml(said) + "</p>" : "") +
+    "<p>Mean absolute error is per channel on an 8-bit scale, so “within 1” means no " +
+    "pixel channel is off by more than a single level on average. The worst offenders " +
+    "are in the panel behind this card; click any of them to inspect it.</p>" +
+    '<div class="row"><button class="btn btn--secondary" data-act="dismiss">Inspect the board</button>' +
+    '<button class="btn btn--primary" data-act="start">Run it again</button></div>';
+}
+
+function fact(k, v, small) {
+  return '<div class="fact"><div class="k">' + escapeHtml(k) + '</div><div class="v">' +
+    escapeHtml(v) + (small ? " <small>" + escapeHtml(small) + "</small>" : "") + "</div></div>";
+}
+
+function wireCard() {
+  for (const b of $("card").querySelectorAll("[data-act]")) {
+    b.addEventListener("click", () => {
+      const a = b.dataset.act;
+      if (a === "start") start();
+      else if (a === "clear") { $("filter").value = ""; start(); }
+      else { $("veil").hidden = true; overlayKey = "__dismissed"; }
+    });
+  }
+}
+
+/* --- notices ----------------------------------------------------------- */
+
+function setNotice(id, kind, html, action) {
+  noticeState[id] = { kind: kind, html: html, action: action };
+  paintNotices();
+}
+function clearNotice(id) { if (noticeState[id]) { delete noticeState[id]; paintNotices(); } }
+function paintNotices() {
+  const host = $("notices");
+  host.textContent = "";
+  for (const id in noticeState) {
+    const n = noticeState[id];
+    const d = document.createElement("div");
+    d.className = "notice notice--" + n.kind;
+    d.setAttribute("role", n.kind === "error" ? "alert" : "status");
+    const body = document.createElement("div");
+    body.className = "body";
+    body.innerHTML = n.html;
+    d.appendChild(body);
+    if (n.action) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn--secondary";
+      b.textContent = n.action.label;
+      b.addEventListener("click", n.action.fn);
+      d.appendChild(b);
+    }
+    host.appendChild(d);
+  }
+}
+
+/* --------------------------------------------------------- the transport */
+
+function streamUrl(path) {
+  const u = new URL(path, location.href);
+  u.searchParams.set("pace", String(pace));
+  const f = $("filter").value.trim();
+  if (f) u.searchParams.set("filter", f);
+  return u.pathname + u.search;
+}
+
+function setConn(c) {
+  const el = $("conn");
+  el.dataset.c = c;
+  $("conn-t").textContent = { idle: "Idle", connecting: "Connecting", live: "Live",
+    retry: "Reconnecting", lost: "Disconnected", done: "Finished",
+    stopped: "Stopped" }[c] || c;
+}
+
+function closeStream() {
+  if (es) { try { es.close(); } catch (e) {} }
+  es = null;
+}
+
+function connect() {
+  closeStream();
+  const path = CANDIDATES[candIdx];
+  srcUrl = streamUrl(path);
+  setConn("connecting");
+  dirty = true;
+  const ES = window.EventSource;
+  if (!ES) {
+    setConn("lost");
+    setNotice("drop", "error",
+      "<strong>No EventSource in this browser.</strong> The gauntlet needs server-sent events.");
+    return;
+  }
+  try { es = new ES(srcUrl); }
+  catch (e) { onDrop(); return; }
+  es.onopen = () => { setConn("live"); clearNotice("drop"); dirty = true; };
+  es.onmessage = (m) => onEvent(m.data);
+  /* AG-UI servers that name the SSE event as well as the JSON type */
+  for (const n of ["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "STATE_SNAPSHOT", "STATE_DELTA",
+    "STEP_STARTED", "STEP_FINISHED", "CUSTOM"]) {
+    try { es.addEventListener(n, (m) => onEvent(m.data, n)); } catch (e) {}
+  }
+  es.onerror = onDrop;
+}
+
+function onDrop() {
+  /* the server hangs up as soon as it has sent RUN_FINISHED, long before the
+     board has finished playing the events out. That is the run ending, not a
+     dropped connection, even though the queue still has files in it. */
+  if (terminal || ended === "done") {
+    if (ended) setConn(ended === "error" ? "stopped" : "done");
+    return;
+  }
+  /* nothing has ever arrived on this path: try the next route before crying */
+  if (!sawEvent && candIdx < CANDIDATES.length - 1) {
+    candIdx++;
+    connect();
+    return;
+  }
+  const closed = !es || es.readyState === 2;
+  if (closed) {
+    setConn("lost");
+    setNotice("drop", "error",
+      "<strong>The connection dropped.</strong> " +
+      (ledger.length ? fmtInt(ledger.length) + " file" + (ledger.length === 1 ? "" : "s") +
+        " measured before it went. The board below is what we had." :
+        "Nothing arrived before it went."),
+      { label: "Reconnect", fn: () => { sawEvent = false; connect(); } });
+  } else {
+    setConn("retry");
+    setNotice("drop", "warn",
+      "<strong>Lost the stream — retrying.</strong> The board is holding the last " +
+      "state the server sent.");
+  }
+  dirty = true;
+}
+
+/* ------------------------------------------------------------- controls */
+
+function start() {
+  wantOpen = true;
+  sawEvent = false;
+  candIdx = 0;
+  ended = null; terminal = null; errorMsg = null; frozen = null; shownFile = null;
+  stepName = ""; said = ""; opening = ""; result = null; pendingKey = null;
+  ledger = []; seen = new Map(); queue.length = 0;
+  S = blankState();
+  worstKey = null; overlayKey = "";
+  histBars = [];
+  buildRail(0);
+  clearNotice("drop"); clearNotice("run");
+  paused = false;
+  syncButtons();
+  $("veil").hidden = true;
+  $("start-t").textContent = "Restart";
+  dirty = true;
+  connect();
+}
+
+function syncButtons() {
+  $("pause").disabled = !wantOpen;
+  $("pause-t").textContent = paused ? "Resume" + (queue.length ? " (" + queue.length + ")" : "") : "Pause";
+  $("pause").setAttribute("aria-pressed", String(paused));
+  for (const k of ["slow", "brisk", "full"])
+    $("pace-" + k).setAttribute("aria-pressed", String(paceKey === k));
+}
+
+$("start").addEventListener("click", start);
+$("pause").addEventListener("click", () => {
+  paused = !paused;
+  if (!paused) lastApply = 0;
+  syncButtons();
+  if (paused) setNotice("pause", "warn",
+    "<strong>Paused.</strong> The server keeps sending; the board is holding the events " +
+    "and will catch up when you resume.");
+  else clearNotice("pause");
+  dirty = true;
+});
+for (const k of ["slow", "brisk", "full"]) {
+  $("pace-" + k).addEventListener("click", () => {
+    paceKey = k; pace = PACES[k]; lastApply = 0;
+    syncButtons(); dirty = true;
+  });
+}
+for (const b of document.querySelectorAll("[data-gain]")) {
+  b.addEventListener("click", () => {
+    gain = Number(b.dataset.gain);
+    for (const o of document.querySelectorAll("[data-gain]"))
+      o.setAttribute("aria-pressed", String(o === b));
+    const f = gain === 1 ? "none" : "brightness(" + gain + ") saturate(1.1)";
+    $("plate-diff").style.filter = f;
+  });
+}
+/* the filter takes effect on Enter or on Start — never on a keystroke, or a
+   presenter typing four letters would restart the run four times */
+$("filter").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); start(); }
+});
+$("filter").addEventListener("input", () => {
+  const live = srcUrl ? decodeURIComponent((/[?&]filter=([^&]*)/.exec(srcUrl) || ["", ""])[1]) : "";
+  const now = $("filter").value.trim();
+  $("start-t").textContent = !wantOpen ? "Start the run"
+    : now !== live ? "Apply filter" : "Restart";
+});
+addEventListener("keydown", (e) => {
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.code === "Space") { e.preventDefault(); $("pause").click(); }
+  else if (e.key === "Escape") {
+    if (frozen) $("unfreeze").click();
+    else if (!$("veil").hidden) { $("veil").hidden = true; overlayKey = "__dismissed"; }
+  } else if (e.key === "/") { e.preventDefault(); $("filter").focus(); }
+});
+
+/* ---------------------------------------------------------------- boot */
+
+(function boot() {
+  const host = $("score");
+  for (const v of VERDICTS) {
+    const d = document.createElement("div");
+    d.className = "sc";
+    d.style.setProperty("--vbg", "var(--v-" + v + ")");
+    d.style.setProperty("--vtext", "var(--vt-" + v + ")");
+    d.innerHTML = '<span class="k">' + VLABEL[v] + '</span><span class="v" id="sc-' + v + '">0</span>';
+    host.appendChild(d);
+  }
+  for (const v of VERDICTS) aim("t_" + v, 0);
+  aim("seen", 0); aim("fps", 0); aim("mps", 0); aim("el", 0); aim("mp", 0);
+  buildRail(0);
+  syncButtons();
+  render();
+  requestAnimationFrame(tick);
+  if (Q.has("autostart")) start();
+})();
+
+/* the harness reaches in here; nothing else does */
+window.__gauntlet = {
+  get state() { return S; },
+  get queue() { return queue.length; },
+  get ledger() { return ledger; },
+  get paused() { return paused; },
+  get ended() { return ended; },
+  get conn() { return $("conn").dataset.c; },
+  start: start
+};
+
+})();
+</script>
+</body>
+</html>

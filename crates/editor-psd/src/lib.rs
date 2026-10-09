@@ -18,6 +18,7 @@ pub mod import;
 pub mod io;
 pub mod kinds;
 pub mod linked;
+pub mod pattern;
 pub mod sidecar;
 pub mod structure;
 pub mod text;

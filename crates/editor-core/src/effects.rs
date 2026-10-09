@@ -69,11 +69,20 @@ pub struct Glow {
     pub size: f32,
     /// Inner glow only.
     pub source: GlowSource,
+    /// Photoshop's "Range" (`Inpr`), 0..1, default 0.5. It says over what
+    /// fraction of the blurred matte the contour is spread, and in practice
+    /// it scales the matte: at the default 50 % the glow reaches full
+    /// opacity where a plain blur would only be half way. Leaving it out is
+    /// what made glows here look washed out and muddy against the backdrop.
+    pub range: f32,
+    /// A gradient glow fades through these stops instead of `color`: the
+    /// first stop is the glow's outer edge, the last one the shape's.
+    pub stops: Vec<GradientStop>,
 }
 
 impl Default for Glow {
     fn default() -> Self {
-        Glow { enabled: true, blend: BlendMode::Screen, color: Rgba8::rgb(255, 255, 190), opacity: 0.75, spread: 0.0, size: 5.0, source: GlowSource::Edge }
+        Glow { enabled: true, blend: BlendMode::Screen, color: Rgba8::rgb(255, 255, 190), opacity: 0.75, spread: 0.0, size: 5.0, source: GlowSource::Edge, range: 0.5, stops: Vec::new() }
     }
 }
 
@@ -190,6 +199,9 @@ pub struct GradientOverlay {
     /// 10..150 (%)
     pub scale: f32,
     pub reverse: bool,
+    /// Centre offset as a fraction of the layer's bounds, ×100 (Photoshop's
+    /// `Ofst`).
+    pub offset: (f32, f32),
 }
 
 impl Default for GradientOverlay {
@@ -203,6 +215,167 @@ impl Default for GradientOverlay {
             angle: 90.0,
             scale: 100.0,
             reverse: false,
+            offset: (0.0, 0.0),
+        }
+    }
+}
+
+impl GradientOverlay {
+    /// The gradient's colour at buffer pixel `(i, j)`, straight RGBA in 0..1.
+    fn color_at(&self, ctx: &EffectCtx, i: usize, j: usize) -> [f32; 4] {
+        let (bx, by, bw, bh) = ctx.bounds;
+        let cx = bx + bw / 2.0 + self.offset.0 as f64 / 100.0 * bw;
+        let cy = by + bh / 2.0 + self.offset.1 as f64 / 100.0 * bh;
+        let a = (self.angle as f64).to_radians();
+        let (dx, dy) = (a.cos(), -a.sin());
+        let half = ((bw * dx.abs() + bh * dy.abs()) / 2.0).max(1.0) * (self.scale as f64 / 100.0).max(0.1);
+        let px = ctx.x0 + (i as f64 + 0.5) * ctx.step - cx;
+        let py = ctx.y0 + (j as f64 + 0.5) * ctx.step - cy;
+        let tt = match self.gradient {
+            GradientKind::Linear => (px * dx + py * dy) / (2.0 * half) + 0.5,
+            GradientKind::Reflected => ((px * dx + py * dy) / half).abs(),
+            GradientKind::Radial => (px * px + py * py).sqrt() / half,
+            GradientKind::Diamond => (px.abs() + py.abs()) / half,
+            GradientKind::Angle => ((py.atan2(px) - (-dy).atan2(dx)).rem_euclid(std::f64::consts::TAU)) / std::f64::consts::TAU,
+        };
+        let mut tt = tt.clamp(0.0, 1.0) as f32;
+        if self.reverse {
+            tt = 1.0 - tt;
+        }
+        gradient_at(&self.stops, tt)
+    }
+}
+
+/// Base64 for pattern pixels: a pattern is tens to hundreds of kilobytes, and
+/// a JSON array of that many numbers is both enormous and rejected by the
+/// project format's array limit.
+mod b64 {
+    use serde::Deserialize;
+
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(b: &[u8]) -> String {
+        let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+        for c in b.chunks(3) {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= c.len() {
+                    s.push(A[(n >> (18 - i * 6)) as usize & 63] as char);
+                } else {
+                    s.push('=');
+                }
+            }
+        }
+        s
+    }
+
+    pub fn decode(s: &str) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(s.len() / 4 * 3);
+        let (mut acc, mut bits) = (0u32, 0u32);
+        for ch in s.bytes() {
+            if ch == b'=' || ch.is_ascii_whitespace() {
+                continue;
+            }
+            let v = A.iter().position(|&a| a == ch)? as u32;
+            acc = acc << 6 | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+            }
+        }
+        Some(out)
+    }
+
+    pub fn serialize<S: serde::Serializer>(b: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&encode(b))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        decode(&s).ok_or_else(|| serde::de::Error::custom("pattern pixels are not base64"))
+    }
+}
+
+/// A pattern's pixels, as the file's `Patt` resource stores them: straight
+/// 8-bit RGBA, row-major, `width * height * 4` bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PatternImage {
+    pub width: u32,
+    pub height: u32,
+    #[serde(with = "b64")]
+    pub rgba: Vec<u8>,
+}
+
+impl PatternImage {
+    pub fn is_valid(&self) -> bool {
+        self.width > 0 && self.height > 0 && self.rgba.len() == self.width as usize * self.height as usize * 4
+    }
+
+    /// Bilinear sample of the infinitely tiled pattern at pattern coordinates
+    /// `(u, v)` in pattern pixels. Returns straight RGBA in 0..1.
+    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        let (pw, ph) = (self.width as i64, self.height as i64);
+        let (fu, fv) = (u - 0.5, v - 0.5);
+        let (x0, y0) = (fu.floor(), fv.floor());
+        let (tx, ty) = (fu - x0, fv - y0);
+        let wrap = |a: f64, n: i64| ((a as i64 % n) + n) % n;
+        let (ix, iy) = (wrap(x0 as f64, pw), wrap(y0 as f64, ph));
+        let (jx, jy) = ((ix + 1) % pw, (iy + 1) % ph);
+        let at = |x: i64, y: i64| {
+            let o = (y as usize * self.width as usize + x as usize) * 4;
+            [0, 1, 2, 3].map(|c| self.rgba[o + c] as f32 / 255.0)
+        };
+        let (a, b, c, d) = (at(ix, iy), at(jx, iy), at(ix, jy), at(jx, jy));
+        [0, 1, 2, 3].map(|i| {
+            let top = a[i] + (b[i] - a[i]) * tx;
+            let bot = c[i] + (d[i] - c[i]) * tx;
+            top + (bot - top) * ty
+        })
+    }
+}
+
+/// Pattern overlay. The pixels travel with the effect: the engine has no
+/// pattern library, and the PSD's `Patt` resource is the only place they
+/// exist.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PatternOverlay {
+    #[serde(default = "t")]
+    pub enabled: bool,
+    pub blend: BlendMode,
+    pub opacity: f32,
+    /// 1..1000 (%)
+    pub scale: f32,
+    /// Photoshop CC's pattern angle, in degrees. 0 in older files.
+    pub angle: f32,
+    /// Tiling offset in document pixels.
+    pub phase: (f32, f32),
+    /// "Link with layer". Tiling always starts at the document's origin plus
+    /// the phase; this only records whether Photoshop rewrites the phase when
+    /// the layer moves.
+    pub linked: bool,
+    /// The pattern's name and id in the file's `Patt` resource, kept so an
+    /// export can name the same pattern.
+    pub name: String,
+    pub id: String,
+    pub pattern: Option<PatternImage>,
+}
+
+impl Default for PatternOverlay {
+    fn default() -> Self {
+        PatternOverlay {
+            enabled: true,
+            blend: BlendMode::Normal,
+            opacity: 1.0,
+            scale: 100.0,
+            angle: 0.0,
+            phase: (0.0, 0.0),
+            linked: true,
+            name: String::new(),
+            id: String::new(),
+            pattern: None,
         }
     }
 }
@@ -226,11 +399,25 @@ pub struct StrokeEffect {
     pub blend: BlendMode,
     pub opacity: f32,
     pub color: Rgba8,
+    /// A gradient stroke paints the band with this gradient instead of
+    /// `color`. Its own blend and opacity are unused; the stroke's apply.
+    pub gradient: Option<GradientOverlay>,
+    /// A pattern stroke paints the band with this pattern instead of `color`.
+    pub pattern: Option<PatternOverlay>,
 }
 
 impl Default for StrokeEffect {
     fn default() -> Self {
-        StrokeEffect { enabled: true, size: 3.0, position: StrokePosition::Outside, blend: BlendMode::Normal, opacity: 1.0, color: Rgba8::BLACK }
+        StrokeEffect {
+            enabled: true,
+            size: 3.0,
+            position: StrokePosition::Outside,
+            blend: BlendMode::Normal,
+            opacity: 1.0,
+            color: Rgba8::BLACK,
+            gradient: None,
+            pattern: None,
+        }
     }
 }
 
@@ -242,6 +429,11 @@ pub struct LayerEffects {
     pub enabled: bool,
     /// Multiplies every size and distance (Layer › Layer Style › Scale Effects).
     pub scale: f32,
+    /// Take the outline the effects are built from from the layer's mask
+    /// alone, ignoring the content's own transparency. Photoshop does this
+    /// for a shape or fill layer, whose outline is its path: a gradient fill
+    /// that fades to nothing still gets a stroke all the way round it.
+    pub outline_from_mask: bool,
     pub drop_shadow: Option<Shadow>,
     pub inner_shadow: Option<Shadow>,
     pub outer_glow: Option<Glow>,
@@ -250,7 +442,11 @@ pub struct LayerEffects {
     pub satin: Option<Satin>,
     pub color_overlay: Option<ColorOverlay>,
     pub gradient_overlay: Option<GradientOverlay>,
+    pub pattern_overlay: Option<PatternOverlay>,
     pub stroke: Option<StrokeEffect>,
+    /// Photoshop lets a style carry several strokes. `stroke` is the first;
+    /// these draw after it, in the file's order.
+    pub extra_strokes: Vec<StrokeEffect>,
 }
 
 impl Default for LayerEffects {
@@ -258,6 +454,7 @@ impl Default for LayerEffects {
         LayerEffects {
             enabled: true,
             scale: 1.0,
+            outline_from_mask: false,
             drop_shadow: None,
             inner_shadow: None,
             outer_glow: None,
@@ -266,7 +463,9 @@ impl Default for LayerEffects {
             satin: None,
             color_overlay: None,
             gradient_overlay: None,
+            pattern_overlay: None,
             stroke: None,
+            extra_strokes: Vec::new(),
         }
     }
 }
@@ -282,7 +481,9 @@ impl LayerEffects {
                 || self.satin.as_ref().is_some_and(|e| e.enabled)
                 || self.color_overlay.as_ref().is_some_and(|e| e.enabled)
                 || self.gradient_overlay.as_ref().is_some_and(|e| e.enabled)
-                || self.stroke.as_ref().is_some_and(|e| e.enabled))
+                || self.pattern_overlay.as_ref().is_some_and(|e| e.enabled && e.pattern.as_ref().is_some_and(PatternImage::is_valid))
+                || self.stroke.as_ref().is_some_and(|e| e.enabled)
+                || self.extra_strokes.iter().any(|e| e.enabled))
     }
 
     /// How far effects reach beyond the layer's pixels, in document pixels.
@@ -297,7 +498,7 @@ impl LayerEffects {
         if let Some(g) = self.outer_glow.as_ref().filter(|e| e.enabled) {
             r = r.max(g.size * 1.5 + 2.0);
         }
-        if let Some(s) = self.stroke.as_ref().filter(|e| e.enabled && e.position != StrokePosition::Inside) {
+        for s in self.stroke.iter().chain(self.extra_strokes.iter()).filter(|e| e.enabled && e.position != StrokePosition::Inside) {
             r = r.max(s.size + 2.0);
         }
         if let Some(b) = self.bevel.as_ref().filter(|e| e.enabled && matches!(e.style, BevelStyle::OuterBevel | BevelStyle::Emboss | BevelStyle::PillowEmboss)) {
@@ -395,10 +596,34 @@ pub fn signed_distance(alpha: &[f32], w: usize, h: usize) -> Vec<f32> {
         .collect()
 }
 
-fn gaussianish(buf: &mut [f32], w: usize, h: usize, size: f32) {
-    let r = (size / 2.0).round() as usize;
+/// Three box passes standing in for a Gaussian of standard deviation
+/// `size / div`.
+fn blur_matte(buf: &mut [f32], w: usize, h: usize, size: f32, div: f32) {
+    let r = (size / div).round() as usize;
     if r > 0 {
         box_blur_1ch(buf, w, h, r, 3);
+    }
+}
+
+/// A shadow's or satin's blur. Photoshop's "Size" there is about two
+/// standard deviations.
+fn gaussianish(buf: &mut [f32], w: usize, h: usize, size: f32) {
+    blur_matte(buf, w, h, size, 2.0);
+}
+
+/// A glow's blur. Measured against `layer_effects.psd`, whose 41 px outer
+/// glow falls off with sigma 13, Photoshop's glow "Size" is about three
+/// standard deviations — half again tighter than a shadow of the same size.
+fn glow_blur(buf: &mut [f32], w: usize, h: usize, size: f32) {
+    blur_matte(buf, w, h, size, 2.5);
+}
+
+/// Photoshop's glow "Range": the blurred matte is stretched so that it
+/// saturates at `range` of its full value.
+fn glow_range(buf: &mut [f32], range: f32) {
+    let r = range.clamp(0.01, 1.0);
+    if r < 1.0 {
+        buf.iter_mut().for_each(|v| *v = (*v / r).min(1.0));
     }
 }
 
@@ -429,6 +654,57 @@ fn spread_curve(buf: &mut [f32], spread: f32) {
     }
     for v in buf.iter_mut() {
         *v = (*v / (1.0 - s)).min(1.0);
+    }
+}
+
+/// Tile `p`'s pattern over the buffer, weighted by `matte` (a per-pixel
+/// coverage: the layer's alpha for an overlay, the band for a stroke).
+#[allow(clippy::too_many_arguments)]
+fn paint_pattern(backdrop: &mut [f32], w: usize, h: usize, p: &PatternOverlay, ctx: &EffectCtx, matte: &[f32], opacity: f32, mode: BlendMode) {
+    let Some(img) = p.pattern.as_ref().filter(|i| i.is_valid()) else { return };
+    // Photoshop tiles from the document's origin plus the phase, whatever
+    // "Link with layer" says: that flag only decides whether moving the layer
+    // rewrites the phase.
+    let (ox, oy) = (p.phase.0 as f64, p.phase.1 as f64);
+    let s = (p.scale / 100.0).max(0.01) as f64;
+    let a = (-p.angle as f64).to_radians();
+    let (ca, sa) = (a.cos(), a.sin());
+    for j in 0..h {
+        let dy = ctx.y0 + (j as f64 + 0.5) * ctx.step - oy;
+        for i in 0..w {
+            let idx = j * w + i;
+            let st = matte[idx] * opacity;
+            if st <= 0.0 {
+                continue;
+            }
+            let dx = ctx.x0 + (i as f64 + 0.5) * ctx.step - ox;
+            let (rx, ry) = (dx * ca - dy * sa, dx * sa + dy * ca);
+            let c = img.sample((rx / s) as f32, (ry / s) as f32);
+            let av = c[3] * st;
+            if av > 0.0 {
+                composite_px(&mut backdrop[idx * 4..idx * 4 + 4], [c[0], c[1], c[2]], av.min(1.0), mode);
+            }
+        }
+    }
+}
+
+/// A glow, in one colour or through its gradient. The gradient runs from the
+/// glow's faint outer edge to the shape's own edge.
+fn paint_glow(backdrop: &mut [f32], matte: &[f32], g: &Glow, strength: &[f32]) {
+    if g.stops.is_empty() {
+        composite_matte(backdrop, matte, g.color, g.opacity, g.blend, strength);
+        return;
+    }
+    for (i, px) in backdrop.chunks_exact_mut(4).enumerate() {
+        let m = matte[i] * strength[i];
+        if m <= 0.0 {
+            continue;
+        }
+        let c = gradient_at(&g.stops, 1.0 - m.min(1.0));
+        let a = m * g.opacity * c[3];
+        if a > 0.0 {
+            composite_px(px, [c[0], c[1], c[2]], a.min(1.0), g.blend);
+        }
     }
 }
 
@@ -469,6 +745,14 @@ pub fn composite_with_effects(
     content: &[f32],
     w: usize,
     h: usize,
+    // `strength` is layer opacity times the layer mask. Photoshop separates
+    // the two: a mask *shapes* an effect but does not erase the part falling
+    // outside it until "Layer Mask Hides Effects" is turned on. Painting the
+    // outside effects with opacity alone was measured on the corpus and is
+    // not a clear win: stroke-effects 42.3 -> 39.0 and double-stroke
+    // 28.9 -> 24.9, but shape-fx2 6.99 -> 9.41, and no rule separating the
+    // two (raster mask vs outline_from_mask) fitted both files. Left as is
+    // until someone settles what Photoshop does for a vector-shaped layer.
     strength: &[f32],
     fill_opacity: f32,
     content_blend: BlendMode,
@@ -476,7 +760,20 @@ pub fn composite_with_effects(
 ) {
     let n = w * h;
     let k = fx.scale.max(0.01) * ctx.scale;
-    let alpha: Vec<f32> = content.chunks_exact(4).map(|p| p[3]).collect();
+    // The shape the effects are generated from is the layer's transparency
+    // *after* its masks. A fill layer's colour covers the whole buffer and
+    // its shape lives entirely in the vector mask, which reaches here inside
+    // `strength`; taking the content's alpha alone gave such a layer a
+    // stroke around the canvas instead of around its shape.
+    let raw_alpha: Vec<f32> = content.chunks_exact(4).map(|p| p[3]).collect();
+    let alpha: Vec<f32> = if fx.outline_from_mask {
+        strength.to_vec()
+    } else {
+        // `min` rather than a product: a raster and the vector mask that
+        // traces it describe the same antialiased edge, and multiplying the
+        // two would count it twice and pull the outline inwards.
+        raw_alpha.iter().zip(strength.iter()).map(|(a, s)| a.min(*s)).collect()
+    };
     let light = |angle: f32| {
         let a = angle.to_radians();
         (-a.cos(), a.sin())
@@ -492,13 +789,14 @@ pub fn composite_with_effects(
     }
     if let Some(g) = fx.outer_glow.as_ref().filter(|e| e.enabled) {
         let mut m = alpha.clone();
-        gaussianish(&mut m, w, h, g.size * k * (1.0 - g.spread / 100.0));
+        glow_blur(&mut m, w, h, g.size * k * (1.0 - g.spread / 100.0));
         spread_curve(&mut m, g.spread);
+        glow_range(&mut m, g.range);
         // The glow shows where the content does not cover it.
         for i in 0..n {
             m[i] *= 1.0 - alpha[i];
         }
-        composite_matte(backdrop, &m, g.color, g.opacity, g.blend, strength);
+        paint_glow(backdrop, &m, g, strength);
     }
 
     // --- the content itself
@@ -511,8 +809,13 @@ pub fn composite_with_effects(
     }
 
     // Interior effects are clipped to the content's alpha.
-    let inside_strength: Vec<f32> = (0..n).map(|i| strength[i] * alpha[i]).collect();
+    let inside_strength: Vec<f32> = (0..n).map(|i| strength[i] * raw_alpha[i]).collect();
 
+    // Pattern overlay is the lowest of the three overlays in Photoshop's
+    // stack, so it draws before the others.
+    if let Some(p) = fx.pattern_overlay.as_ref().filter(|e| e.enabled) {
+        paint_pattern(backdrop, w, h, p, ctx, &inside_strength, p.opacity, p.blend);
+    }
     if let Some(s) = fx.satin.as_ref().filter(|e| e.enabled) {
         let (lx, ly) = light(s.angle);
         let d = s.distance * k;
@@ -530,32 +833,14 @@ pub fn composite_with_effects(
         composite_matte(backdrop, &ones, o.color, o.opacity, o.blend, &inside_strength);
     }
     if let Some(g) = fx.gradient_overlay.as_ref().filter(|e| e.enabled) {
-        let (bx, by, bw, bh) = ctx.bounds;
-        let (cx, cy) = (bx + bw / 2.0, by + bh / 2.0);
-        let a = (g.angle as f64).to_radians();
-        let (dx, dy) = (a.cos(), -a.sin());
-        let half = ((bw * dx.abs() + bh * dy.abs()) / 2.0).max(1.0) * (g.scale as f64 / 100.0).max(0.1);
         for j in 0..h {
-            let py = ctx.y0 + (j as f64 + 0.5) * ctx.step - cy;
             for i in 0..w {
                 let idx = j * w + i;
                 let s = inside_strength[idx] * g.opacity;
                 if s <= 0.0 {
                     continue;
                 }
-                let px = ctx.x0 + (i as f64 + 0.5) * ctx.step - cx;
-                let tt = match g.gradient {
-                    GradientKind::Linear => (px * dx + py * dy) / (2.0 * half) + 0.5,
-                    GradientKind::Reflected => ((px * dx + py * dy) / half).abs(),
-                    GradientKind::Radial => (px * px + py * py).sqrt() / half,
-                    GradientKind::Diamond => (px.abs() + py.abs()) / half,
-                    GradientKind::Angle => ((py.atan2(px) - (-dy).atan2(dx)).rem_euclid(std::f64::consts::TAU)) / std::f64::consts::TAU,
-                };
-                let mut tt = tt.clamp(0.0, 1.0) as f32;
-                if g.reverse {
-                    tt = 1.0 - tt;
-                }
-                let c = gradient_at(&g.stops, tt);
+                let c = g.color_at(ctx, i, j);
                 composite_px(&mut backdrop[idx * 4..idx * 4 + 4], [c[0], c[1], c[2]], (c[3] * s).min(1.0), g.blend);
             }
         }
@@ -565,12 +850,13 @@ pub fn composite_with_effects(
             GlowSource::Edge => alpha.iter().map(|a| 1.0 - a).collect(),
             GlowSource::Center => alpha.clone(),
         };
-        gaussianish(&mut m, w, h, gl.size * k * (1.0 - gl.spread / 100.0));
+        glow_blur(&mut m, w, h, gl.size * k * (1.0 - gl.spread / 100.0));
         spread_curve(&mut m, gl.spread);
+        glow_range(&mut m, gl.range);
         if gl.source == GlowSource::Center {
             m.iter_mut().for_each(|v| *v = 1.0 - *v);
         }
-        composite_matte(backdrop, &m, gl.color, gl.opacity, gl.blend, &inside_strength);
+        paint_glow(backdrop, &m, gl, &inside_strength);
     }
     if let Some(s) = fx.inner_shadow.as_ref().filter(|e| e.enabled) {
         let (lx, ly) = light(s.angle);
@@ -584,8 +870,9 @@ pub fn composite_with_effects(
     if let Some(b) = fx.bevel.as_ref().filter(|e| e.enabled) {
         bevel(backdrop, &alpha, w, h, b, k, strength);
     }
-    if let Some(st) = fx.stroke.as_ref().filter(|e| e.enabled) {
-        let sd = signed_distance(&alpha, w, h);
+    let mut sd: Option<Vec<f32>> = None;
+    for st in fx.stroke.iter().chain(fx.extra_strokes.iter()).filter(|e| e.enabled) {
+        let sd = sd.get_or_insert_with(|| signed_distance(&alpha, w, h));
         let size = st.size * k;
         let (lo, hi) = match st.position {
             StrokePosition::Outside => (0.0, size),
@@ -593,36 +880,64 @@ pub fn composite_with_effects(
             StrokePosition::Center => (-size / 2.0, size / 2.0),
         };
         let m: Vec<f32> = sd.iter().map(|&d| ((d - lo + 0.5).clamp(0.0, 1.0)) * ((hi - d + 0.5).clamp(0.0, 1.0))).collect();
-        composite_matte(backdrop, &m, st.color, st.opacity, st.blend, strength);
+        // A gradient or pattern stroke paints the same band with a gradient
+        // or a tiled pattern; the stroke's own blend and opacity apply.
+        if let Some(g) = &st.gradient {
+            let band: Vec<f32> = (0..n).map(|i| m[i] * strength[i]).collect();
+            for j in 0..h {
+                for i in 0..w {
+                    let idx = j * w + i;
+                    let s = band[idx] * st.opacity;
+                    if s <= 0.0 {
+                        continue;
+                    }
+                    let c = g.color_at(ctx, i, j);
+                    composite_px(&mut backdrop[idx * 4..idx * 4 + 4], [c[0], c[1], c[2]], (c[3] * s).min(1.0), st.blend);
+                }
+            }
+        } else if let Some(p) = st.pattern.as_ref().filter(|p| p.pattern.is_some()) {
+            let band: Vec<f32> = (0..n).map(|i| m[i] * strength[i]).collect();
+            paint_pattern(backdrop, w, h, p, ctx, &band, st.opacity, st.blend);
+        } else {
+            composite_matte(backdrop, &m, st.color, st.opacity, st.blend, strength);
+        }
     }
 }
 
 fn bevel(backdrop: &mut [f32], alpha: &[f32], w: usize, h: usize, b: &Bevel, k: f32, strength: &[f32]) {
     let size = (b.size * k).max(0.5);
-    let sd = signed_distance(alpha, w, h);
-    // Height rises from the edge over `size` pixels.
-    let mut height: Vec<f32> = sd
-        .iter()
-        .map(|&d| {
-            let t = match b.style {
-                BevelStyle::InnerBevel => (-d / size).clamp(0.0, 1.0),
-                BevelStyle::OuterBevel => (1.0 - d / size).clamp(0.0, 1.0),
-                BevelStyle::Emboss => ((size - d) / (2.0 * size)).clamp(0.0, 1.0),
-                BevelStyle::PillowEmboss => {
-                    let x = (-d / size).clamp(-1.0, 1.0);
-                    1.0 - x.abs()
-                }
-            };
-            match b.technique {
-                BevelTechnique::Smooth => {
-                    let t2 = t * t * (3.0 - 2.0 * t);
-                    t2
-                }
-                BevelTechnique::ChiselHard => t,
+    // The height field the surface normals come from. Photoshop's two
+    // techniques build it differently, and the difference is what made a
+    // bevel on thin artwork look flat here: a distance ramp over `size`
+    // pixels can only climb as far as the artwork is thick, so a 41 px bevel
+    // on an 8 px letter stem never left the bottom of the ramp. "Smooth"
+    // blurs the alpha instead, so the field keeps the shape's whole form and
+    // the normals tilt over the whole letter, as Photoshop's do. "Chisel"
+    // really is a distance ramp — that is what makes its facets straight.
+    let mut height: Vec<f32> = match b.technique {
+        BevelTechnique::Smooth => {
+            let mut hgt = alpha.to_vec();
+            blur_matte(&mut hgt, w, h, size, 2.5);
+            match b.style {
+                // A pillow is pressed in at the edge: a ridge along it, so
+                // the outside lifts where the inside sinks.
+                BevelStyle::PillowEmboss => hgt.iter().map(|v| 1.0 - (2.0 * v - 1.0).abs()).collect(),
+                _ => hgt,
             }
-        })
-        .collect();
-    let soft = (b.soften * k).round() as usize + if b.technique == BevelTechnique::Smooth { (size / 4.0) as usize } else { 0 };
+        }
+        BevelTechnique::ChiselHard => {
+            let sd = signed_distance(alpha, w, h);
+            sd.iter()
+                .map(|&d| match b.style {
+                    BevelStyle::InnerBevel => (-d / size).clamp(0.0, 1.0),
+                    BevelStyle::OuterBevel => (1.0 - d / size).clamp(0.0, 1.0),
+                    BevelStyle::Emboss => ((size - d) / (2.0 * size)).clamp(0.0, 1.0),
+                    BevelStyle::PillowEmboss => 1.0 - (-d / size).clamp(-1.0, 1.0).abs(),
+                })
+                .collect()
+        }
+    };
+    let soft = (b.soften * k).round() as usize;
     if soft > 0 {
         box_blur_1ch(&mut height, w, h, soft, 2);
     }

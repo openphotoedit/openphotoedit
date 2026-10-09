@@ -203,6 +203,19 @@ impl Engine {
         Ok(out)
     }
 
+    /// [`Self::layer_region`] without the layer's mask: the pixels a mask is
+    /// hiding are still there (Remove background only masks them), and a
+    /// feature that works on the photo itself needs them.
+    pub fn layer_region_unmasked(&self, id: LayerId, x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, JsError> {
+        let mut layer = self.ed.doc.find(id).ok_or_else(|| err(format!("no layer {id}")))?.clone();
+        layer.mask = None;
+        let view = View { x: x as f64, y: y as f64, scale: 1.0, width: width as usize, height: height as usize };
+        let f = render_layer_alone(&layer, &self.ed.doc, view);
+        let mut out = vec![0u8; f.len()];
+        to_u8(&f, &mut out);
+        Ok(out)
+    }
+
     /// A layer thumbnail fitted into `size`×`size`, letterboxed by the
     /// document's aspect ratio. Returns `[w_lo, w_hi, h_lo, h_hi, ...rgba]`.
     pub fn thumbnail(&self, id: Option<LayerId>, size: u32) -> Vec<u8> {

@@ -7,6 +7,7 @@ import { t } from "../lib/i18n";
 import { openFile, pickFiles, exportBlob, saveBlob } from "../lib/io";
 import * as ai from "../lib/ai";
 import { snap, toggleSnap } from "../lib/snap.svelte";
+import { openLiquify } from "../tools/liquify.svelte";
 import { TOOLS } from "../tools/registry";
 import { toolSettings } from "../tools/settings.svelte";
 import { matchShortcut } from "../ui/platform";
@@ -602,7 +603,7 @@ def({
   id: "filter.liquify",
   label: t("Liquify…"),
   shortcut: "Shift+Mod+X",
-  run: () => selectTool("liquify"),
+  run: () => openLiquify(editor),
   enabled: () => hasDoc() && !!TOOLS["liquify"],
   hint: () => (hasDoc() ? t("Select a pixel layer to liquify.") : t("Open a document first.")),
 });

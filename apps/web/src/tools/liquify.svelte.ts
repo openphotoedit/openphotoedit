@@ -1,11 +1,18 @@
 // Liquify (Filter › Liquify, Shift+Cmd/Ctrl+X): displacement brushes on the
 // active pixel layer. Pointer samples go to `transform.liquify` once per
 // animation frame with a shared stroke_id, so the canvas shows the warp live
-// and the whole stroke undoes as one step. The engine keeps one displacement
+// and each stroke undoes as one step. The engine keeps one displacement
 // field per layer and always resamples from the pixels the session started
 // with, so strokes never accumulate blur and Reconstruct can undo a warp
-// locally. The session is released when the tool is put down.
+// locally.
+//
+// Like a filter dialog, Liquify is a modal session: the strokes are a
+// preview until OK or Enter keeps them as ONE history step, and Cancel or
+// Escape puts the layer back exactly (`edit.squash`). Switching to another
+// tool keeps them, as it does for Free Transform. OK and Cancel return to
+// the tool that was in use before.
 
+import type { EditorStore } from "../lib/editor.svelte";
 import { t } from "../lib/i18n";
 import { registerTools } from "./registry";
 import type { Tool, ToolPointer } from "./types";
@@ -83,8 +90,63 @@ interface LiquifyStroke {
 }
 
 let stroke: LiquifyStroke | null = null;
-/** Layer ids with a live engine session to release on deactivate. */
+/** Layer ids with a live engine session to release when Liquify ends. */
 const sessions = new Set<number>();
+
+/** The open Liquify session: the undo depth and document it began on. */
+let session: { base: number; tab: number } | null = null;
+/** The tool to go back to after OK or Cancel. */
+let returnTo = "move";
+
+/** For the options bar: whether a session is open, and whether it is closing. */
+export const liquifySession = $state({ open: false, closing: false });
+
+/** Filter › Liquify: remember the current tool, then pick up Liquify. */
+export function openLiquify(ed: EditorStore) {
+  if (ed.tool !== "liquify") returnTo = ed.tool;
+  ed.tool = "liquify";
+}
+
+function begin(ed: EditorStore) {
+  session = { base: ed.summary?.history.undo.length ?? 0, tab: ed.currentTab };
+  liquifySession.open = true;
+}
+
+/**
+ * End the session: keep its strokes as one step, or take them all back.
+ * Steps that are not Liquify strokes (something else ran meanwhile) are
+ * never folded in or thrown away; the strokes then stay as they are.
+ */
+async function finish(ed: EditorStore, keep: boolean) {
+  const s = session;
+  session = null;
+  liquifySession.open = false;
+  if (stroke) await end(ed);
+  for (const id of sessions) await exec(ed, { op: "transform.liquify-end", id }).catch(() => null);
+  sessions.clear();
+  if (!s || s.tab !== ed.currentTab) return;
+  const ours = ed.summary?.history.undo.slice(s.base) ?? [];
+  if (!ours.length || !ours.every((l) => l === "Liquify")) return;
+  try {
+    await ed.engine.exec({ op: "edit.squash", index: s.base, label: "Liquify", discard: !keep });
+    if (keep) ed.dirty = true;
+  } catch (e) {
+    reportError(ed, e, t("Liquify"));
+  }
+  redraw(ed);
+}
+
+/** OK / Enter (`keep`) or Cancel / Escape: close Liquify and go back to the previous tool. */
+export async function closeLiquify(ed: EditorStore, keep: boolean) {
+  if (!session || liquifySession.closing) return;
+  liquifySession.closing = true;
+  try {
+    await finish(ed, keep);
+  } finally {
+    liquifySession.closing = false;
+  }
+  if (ed.tool === "liquify") ed.tool = returnTo === "liquify" ? "move" : returnTo;
+}
 
 const sp = (p: ToolPointer): Pt3 => ({ x: p.x, y: p.y, p: p.pointerType === "pen" ? p.pressure : 1 });
 
@@ -100,8 +162,12 @@ export const liquify: Tool = {
   id: "liquify",
   label: "Liquify",
   cursor: "none",
+  activate(ed) {
+    begin(ed);
+  },
   down(ed, p) {
-    if (!requirePixels(ed)) return;
+    if (liquifySession.closing || !requirePixels(ed)) return;
+    if (!session) begin(ed);
     const layer = ed.summary?.active ?? null;
     const st: LiquifyStroke = { id: newStrokeId("liquify"), layer, last: null, failed: false, batch: null as unknown as FrameBatcher<Pt3> };
     st.batch = new FrameBatcher<Pt3>(async (pts) => {
@@ -142,12 +208,14 @@ export const liquify: Tool = {
     redraw(ed);
   },
   deactivate(ed) {
-    if (stroke) void end(ed);
-    // Free the engine's displacement fields; the pixels stay as they are.
-    for (const id of sessions) void exec(ed, { op: "transform.liquify-end", id }).catch(() => null);
-    sessions.clear();
+    // Another tool picked up mid-session keeps the strokes, as one step.
+    if (session) void finish(ed, true);
   },
   key(ed, e) {
+    if (e.key === "Enter" || e.key === "Escape") {
+      void closeLiquify(ed, e.key === "Enter");
+      return true;
+    }
     if (e.code === "BracketLeft" || e.code === "BracketRight") {
       setLiquifySize(stepSize(liquifySettings.size, e.code === "BracketRight" ? 1 : -1));
       redraw(ed);

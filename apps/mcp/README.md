@@ -79,6 +79,7 @@ reachable place.
 | `save_document` | Write an open document out |
 | `close_document` | Close it and free the memory |
 | `render_preview` | A small JPEG, for the viewer — see below |
+| `start_gauntlet` | The URL of the Photoshop gauntlet demo, and whether a run is streaming |
 
 Every tool takes and returns **file paths, never image data**. A tool result
 travels back through the model, so returning a 24 megapixel photograph as
@@ -184,6 +185,131 @@ whatever is in `ui/viewer.html` and does not touch it.
 - `preview.scale` is preview pixels per document pixel, for mapping a click
   back to a coordinate.
 
+## The Photoshop gauntlet
+
+A demo, and a fidelity harness with a front end on it. `testdata/psd` holds
+269 real `.psd`/`.psb` files from the psd-tools and ag-psd corpora, and every
+one of them carries the composite **Photoshop itself wrote**. The gauntlet
+imports each file, flattens it with `editor_core::render`, reads that embedded
+composite, lines the two up and measures the difference — live, over AG-UI, to
+a page in a browser.
+
+```sh
+openphotoedit-mcp --root ~/Pictures --agui-port 5261
+# or, for the demo on its own, with no MCP client on stdin:
+openphotoedit-mcp --agui-port 5261 --no-stdio --pace 0
+```
+
+| Flag | |
+|---|---|
+| `--agui-port N` | Serve it on `127.0.0.1:N`. **Loopback only** — nothing binds a wider interface. |
+| `--gauntlet-corpus D` | The corpus to walk. Default `testdata/psd`. |
+| `--gauntlet-ui D` | The page to serve at `/`. Default `apps/mcp/ui/gauntlet`. |
+| `--pace MS` | Pause after each file so a person can watch. Default 120; `?pace=` overrides per request. |
+| `--no-stdio` | Serve only the demo. Without it the process also speaks MCP on stdin, as usual. |
+
+### Routes
+
+| | |
+|---|---|
+| `POST /agui` | The AG-UI HTTP binding: a `RunAgentInput` body, `text/event-stream` back. |
+| `GET /agui` | The same run for an `EventSource` or a `curl -N`, which cannot POST a body. |
+| `GET /gauntlet/stream` | …and `/gauntlet/events`, `/agui/gauntlet`, `/agui/stream`, `/events` — aliases, because the page probes for its stream. |
+| `GET /health` | Whether a run is going, the corpus, the file count. |
+| `GET /` | `apps/mcp/ui/gauntlet/`, read from disk so the page can be edited while the server is up. |
+
+Both methods take `?pace=<ms>` (0 is full speed) and `?filter=<substring>`
+(comma-separated alternatives) — a POST may send the same two in
+`forwardedProps` instead, and the query string wins.
+
+### The events
+
+Built with the [`ag-ui`](https://docs.rs/ag-ui) crate (0.4.5), which carries
+the protocol types, the ordering verifier and the axum endpoint; nothing here
+hand-rolls the wire format. One run looks like this:
+
+```text
+RUN_STARTED
+  TEXT_MESSAGE_START / CONTENT / END     what this run is about to do
+  STATE_SNAPSHOT                         the whole state, once
+  per file:  STEP_STARTED · STATE_DELTA ×3 (import, flatten, compare)
+             · STATE_DELTA (the result) · STEP_FINISHED
+  STATE_DELTA                            phase → done
+  TEXT_MESSAGE_START / CONTENT / END     the tally
+RUN_FINISHED                             result = the summary
+```
+
+One snapshot and then RFC 6902 patches, not a snapshot per file: the state
+carries three base64 JPEGs for the current file and three more for each of the
+five worst, so resending it 269 times would be tens of megabytes for nothing.
+The deltas are hand-built — the runner knows exactly which eight pointers can
+move when a file lands — and every one of them is a `replace` against a path
+the opening snapshot already has.
+
+### The state
+
+```jsonc
+{ "total": 269, "comparable": 244, "index": 137, "phase": "compare", // import|flatten|compare|done
+  "current": { "file": "psd-tools/layer_effects.psd", "width": 800, "height": 600, "layers": 12,
+               "mae": 0.42, "p95": 2.0, "verdict": "within1", "ms": 38,
+               "ours": "data:image/jpeg;base64,…", "adobe": "…", "diff": "…",
+               "note": null },
+  "tally": { "exact": 12, "within1": 155, "within3": 12, "within10": 23,
+             "over": 31, "structureOnly": 25, "failed": 0 },
+  "histogram": [/* 32 counts, 0.5 MAE per bucket; the last one is open-ended */],
+  "histogramEdges": [0, 0.5, 1, …, 16],
+  "worst": [ { "file": "…", "mae": 41.2, "ours": "…", "adobe": "…", "diff": "…" } ],
+  "throughput": { "filesPerSec": 7.8, "megapixelsPerSec": 21.4, "elapsedMs": 17600 } }
+```
+
+- **Mean absolute error** is over RGB, composited on white, in levels out of
+  255 — `editor_psd`'s own `composite_diff` measurement, byte for byte, so the
+  two agree. **p95** is the 95th percentile of the same per-pixel quantity,
+  read from a 4096-bin histogram and reported as the bin's lower edge, so it
+  never over-reports.
+- The seven tally bands are **disjoint** and sum to the files processed.
+  `composite_diff` prints cumulative counts instead: its "≤ 3" is this
+  `exact + within1 + within3`.
+- `structureOnly` is a file whose embedded composite is a placeholder — saved
+  without Maximize Compatibility, or blank white. Those are **not** passes, and
+  the run still streams our own render of them.
+- `ms` is everything the run does for that file, JPEG encoding included, which
+  is why `megapixelsPerSec` understates the compositor. `elapsedMs` is wall
+  clock and therefore includes `pace`; measure throughput at `?pace=0`.
+
+### Two runs at once
+
+Every connection gets its own agent, its own tally and its own walk of the
+corpus, which is only ever read. A second viewer starts a second run rather
+than joining the first halfway through, and closing either tab cancels only
+that one — the response body owns the run, so hyper dropping it trips the run's
+cancellation token and the next emit fails.
+
+A finished stream carries an SSE `retry:` of a day, because a browser's default
+reaction to a closed `EventSource` is to reopen it, and here that would
+silently start the whole corpus again.
+
+### What it measures, on this machine
+
+269 files, 244 with a composite worth comparing against, 46.6 megapixels,
+4.0 s at full speed:
+
+| | |
+|---|---:|
+| exact | 91 |
+| within 1 level | 64 |
+| within 3 | 12 |
+| within 10 | 23 |
+| over 10 | 54 |
+| no reference composite | 25 |
+| failed | 0 |
+
+Cumulatively: ≤ 1: 155, ≤ 3: 167, ≤ 10: 190 of 244 — the same three numbers
+`cargo test -p editor-psd --test composite_diff -- --ignored` prints, which is
+the check that the demo is measuring the real thing. `testdata/psd/FIDELITY.md`
+explains where the 54 come from; the short version is knockout, pattern fills,
+artboards, layer styles and 32-bit linear blending.
+
 ## What is deliberately absent
 
 **AI.** OpenPhotoEdit's models run as onnxruntime-web in the browser app;
@@ -204,7 +330,7 @@ cd apps/mcp
 cargo test
 ```
 
-65 unit tests — the sandbox (traversal, symlinks, overwrite refusal), the
+111 unit tests — the sandbox (traversal, symlinks, overwrite refusal), the
 catalogue (completeness against the engine's sources, and that it invents
 nothing), and each tool's happy path and error path — plus one integration
 test that starts the built binary, speaks JSON-RPC to it over stdio, and
@@ -213,3 +339,22 @@ works through the real surface against the repository's own test files:
 `testdata/raw/google-pixel-3a.dng`. It opens every file the server writes and
 checks the dimensions and the pixels, and it asserts on every single tool
 call that no image data came back unless `include_preview` was set.
+
+`tests/gauntlet_agui.rs` starts the binary with `--agui-port 0`, streams four
+real corpus files out of it and checks what a browser would receive: the
+opening and terminal events, matched steps, one snapshot before any delta,
+every delta naming a path the snapshot has, a tally that adds up to the files
+processed, and that a file we get visibly wrong arrives with all three JPEGs
+rather than being quietly dropped.
+
+The whole-corpus measurement is a separate, ignored test, because it is a
+measurement and not an assertion:
+
+```sh
+CARGO_TARGET_DIR=../../target/mcp cargo test --release --bin openphotoedit-mcp \
+    whole_corpus -- --ignored --nocapture
+```
+
+It prints the tally and writes a per-file table to
+`target/mcp/gauntlet-corpus.tsv`, which is directly comparable with
+`target/fidelity/composite-current.tsv`.

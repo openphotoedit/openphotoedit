@@ -51,6 +51,7 @@ pub const CATALOG: &[OpDoc] = &[
     OpDoc { op: "edit.redo", params: "—", summary: "Step forward one history entry." },
     OpDoc { op: "edit.history-go", params: "index", summary: "Jump so that `index` entries remain on the undo stack." },
     OpDoc { op: "edit.seal", params: "—", summary: "Close the current merge group (the end of a slider drag)." },
+    OpDoc { op: "edit.squash", params: "index, label?, discard?", summary: "End a modal session begun with `index` steps on the undo stack: its steps become one step named `label`, or with `discard` the document returns to `index` and nothing is recorded. Drops redo." },
     OpDoc { op: "edit.begin", params: "label?", summary: "Open a transaction: everything until edit.end becomes one undo step." },
     OpDoc { op: "edit.end", params: "—", summary: "Close the transaction opened by edit.begin and record it as one step." },
     OpDoc { op: "edit.cancel", params: "—", summary: "Abandon the open transaction and restore the document to how it was." },

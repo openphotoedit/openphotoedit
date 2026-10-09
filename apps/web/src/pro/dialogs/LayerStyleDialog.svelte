@@ -15,7 +15,7 @@
   import Slider from "../../ui/Slider.svelte";
   import { PreviewSession } from "../engine.svelte";
   import { pro } from "../state.svelte";
-  import { EFFECTS, emptyEffects, type EffectKey, type LayerEffects, type ProLayer } from "../types";
+  import { EFFECTS, emptyEffects, hasAnyEffect, READ_ONLY_EFFECTS, type EffectKey, type LayerEffects, type ProLayer } from "../types";
 
   let { id, section = "blending" }: { id: number; section?: string } = $props();
 
@@ -43,7 +43,7 @@
   function apply() {
     return (async () => {
       const f = $state.snapshot(fx);
-      const hasAny = EFFECTS.some((e) => f[e.key]);
+      const hasAny = hasAnyEffect(f);
       await session.exec({ op: "layer.set-effects", id, effects: hasAny ? f : null });
       const p = $state.snapshot(layerProps);
       if (p.blend !== startProps.blend || p.opacity !== startProps.opacity || p.fillOpacity !== startProps.fillOpacity) {
@@ -85,7 +85,8 @@
 
   const blendOptions = BLEND_MODES.map((m) => (m ? { value: m, label: t(BLEND_LABELS[m]) } : null));
   // A typed view of the effect being edited.
-  const e = $derived((current !== "blending" ? fx[current as EffectKey] : null) as Record<string, any> | null);
+  const e = $derived((current !== "blending" && current !== "pattern_overlay" ? fx[current as EffectKey] : null) as Record<string, any> | null);
+  const pat = $derived(fx.pattern_overlay ?? null);
   const set = (k: string, v: unknown) => {
     if (e) e[k] = v;
   };
@@ -103,6 +104,17 @@
           <button type="button" class="name" data-testid="style-{def.key}" onclick={() => toggle(def.key, true)}>{t(def.label)}</button>
         </div>
       {/each}
+      <!-- Effects that arrive with a file and have no picker here: shown
+           only when the layer already carries one, so accepting the dialog
+           keeps them instead of quietly dropping them. -->
+      {#each READ_ONLY_EFFECTS as def (def.key)}
+        {#if pat}
+          <div class="item" class:on={current === def.key}>
+            <input type="checkbox" class="check" aria-label={t("Turn on {name}", { name: t(def.label) })} checked={pat.enabled} onchange={(ev) => ((pat.enabled = ev.currentTarget.checked), (current = def.key))} />
+            <button type="button" class="name" data-testid="style-{def.key}" onclick={() => (current = def.key)}>{t(def.label)}</button>
+          </div>
+        {/if}
+      {/each}
     </nav>
 
     <div class="params ops-stack">
@@ -117,6 +129,20 @@
         <Slider label={t("Fill opacity")} value={Math.round(layerProps.fillOpacity * 100)} min={0} max={100} unit="%" defaultValue={100} oninput={(v) => (layerProps.fillOpacity = v / 100)} />
         <Slider label={t("Scale effects")} value={Math.round(fx.scale * 100)} min={1} max={1000} unit="%" defaultValue={100} oninput={(v) => (fx.scale = v / 100)} />
         <label class="ops-check"><input type="checkbox" bind:checked={fx.enabled} />{t("Show effects")}</label>
+      {:else if current === "pattern_overlay" && pat}
+        <span class="ops-section-title">{t("Pattern Overlay")}</span>
+        <div class="ops-row">
+          <span class="ops-label lbl">{t("Pattern")}</span>
+          <span class="ops-note">{pat.name || t("Unnamed")}</span>
+        </div>
+        <p class="ops-note">{t("This pattern came from the file. It is kept and drawn here, but there is no pattern library to choose another from.")}</p>
+        <div class="ops-row">
+          <span class="ops-label lbl">{t("Blend mode")}</span>
+          <Select ariaLabel={t("Blend mode")} value={pat.blend} width={160} options={blendOptions} onchange={(v) => (pat.blend = v as BlendMode)} />
+        </div>
+        <Slider label={t("Opacity")} value={Math.round(pat.opacity * 100)} min={0} max={100} unit="%" defaultValue={100} oninput={(v) => (pat.opacity = v / 100)} />
+        <Slider label={t("Scale")} value={Math.round(pat.scale)} min={1} max={1000} unit="%" defaultValue={100} oninput={(v) => (pat.scale = v)} />
+        <Slider label={t("Angle")} value={Math.round(pat.angle)} min={-180} max={180} unit="°" defaultValue={0} oninput={(v) => (pat.angle = v)} />
       {:else if e}
         <span class="ops-section-title">{t(EFFECTS.find((d) => d.key === current)!.label)}</span>
         {#if current === "bevel"}

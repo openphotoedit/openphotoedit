@@ -27,7 +27,7 @@ editor-project = { path = "../../crates/editor-project" }
 editor-raw = { path = "../../crates/editor-raw" }
 
 rmcp = { version = "3.3", features = ["server", "transport-io", "macros"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "signal", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "signal", "sync", "net", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
@@ -45,6 +45,15 @@ kamadak-exif = "0.6"
 base64 = "0.22"
 # batch_edit takes a glob.
 glob = "0.3"
+
+# The Photoshop gauntlet: the corpus run, streamed to a browser over AG-UI.
+# `ag-ui` is the protocol types, the ordering verifier, the server runtime and
+# the axum endpoint in one crate; `ag-ui-server` 0.1.0 is a separate, much
+# younger crate covering the same ground, so we take the one that already has
+# the axum integration and the run-lifecycle verifier.
+ag-ui = { version = "0.4.5", features = ["axum"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

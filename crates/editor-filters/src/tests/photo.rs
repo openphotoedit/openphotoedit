@@ -14,6 +14,42 @@ fn out_dir() -> std::path::PathBuf {
     p
 }
 
+/// `testdata/photos/landscape.jpg` bilinearly scaled to `mp` megapixels at
+/// 3:2, the image `examples/bench.rs` measures on.
+pub fn upscaled(mp: f64) -> (Vec<u8>, usize, usize) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/photos/landscape.jpg");
+    let img = image::open(path).expect("decode landscape").to_rgba8();
+    let (sw, sh) = (img.width() as usize, img.height() as usize);
+    let src = img.into_raw();
+    let h = ((mp * 1e6 / 1.5).sqrt() / 2.0).round() as usize * 2;
+    let w = (h * 3 / 2 / 2) * 2;
+    if (w, h) == (sw, sh) {
+        return (src, w, h);
+    }
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let fy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (y0, ty) = (fy as usize, fy - fy.floor());
+        let y1 = (y0 + 1).min(sh - 1);
+        for x in 0..w {
+            let fx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let (x0, tx) = (fx as usize, fx - fx.floor());
+            let x1 = (x0 + 1).min(sw - 1);
+            let i = (y * w + x) * 4;
+            for c in 0..4 {
+                let a = src[(y0 * sw + x0) * 4 + c] as f32;
+                let b = src[(y0 * sw + x1) * 4 + c] as f32;
+                let d = src[(y1 * sw + x0) * 4 + c] as f32;
+                let e = src[(y1 * sw + x1) * 4 + c] as f32;
+                let top = a + (b - a) * tx;
+                let bot = d + (e - d) * tx;
+                out[i + c] = (top + (bot - top) * ty + 0.5) as u8;
+            }
+        }
+    }
+    (out, w, h)
+}
+
 pub fn portrait() -> (Vec<u8>, usize, usize) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/photos/portrait.jpg");
     let img = image::open(path).expect("decode portrait").to_rgba8();
